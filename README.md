@@ -1,3 +1,32 @@
+# Runn Search AI Indexer
+
+Runn Search AI Indexer detects meaningful changes to Shopify products and stores an auditable, provider-ready indexing queue. Phase 1 is read-only for catalog data and makes no external search or AI provider calls.
+
+## Phase 1 architecture
+
+- Product create/update/delete webhooks authenticate through the Shopify React Router adapter.
+- Current product data comes from Admin GraphQL rather than incomplete webhook payloads.
+- A normalized SHA-256 fingerprint covers public product, SEO, variant, and media fields; only changed fingerprints create index work.
+- Prisma stores shops, product state, events, queue items, and future provider attempts.
+- The internal queue supports claiming, completion, retry/backoff, failure, cancellation, and index/deindex actions.
+- `scanProductPage` is a cursor-based controlled initial-scan foundation. It is never run automatically and has no UI trigger yet.
+- The dashboard shows real per-shop database counts and recent events.
+
+Product fetches currently cap each product at 100 variants and 50 media items. Basic indexability requires active status and a valid Shopify `onlineStoreUrl`; `publishedAt` is diagnostic only. Shopify's primary domain is retained for candidate URLs, while the last known `onlineStoreUrl` is preserved for deindexing. HTTP, canonical, robots, sitemap, agents.md, llms.txt, structured-data, and full publication-channel audits are not yet implemented.
+
+Google, Bing, IndexNow, OpenAI, Gemini, Perplexity, and other provider calls are deliberately not implemented. Existing Shopify agents/LLM infrastructure remains unchanged.
+
+## Development and database
+
+```sh
+npm install
+npx prisma migrate dev
+npx prisma generate
+npm run dev
+```
+
+Use `npx prisma migrate deploy` in deployed environments. Validation commands are `npx prisma format`, `npx prisma validate`, `npm run typecheck`, `npm run lint`, and `npm run build`.
+
 # Shopify App Template - React Router
 
 This is a template for building a [Shopify app](https://shopify.dev/docs/apps/getting-started) using [React Router](https://reactrouter.com/). It was forked from the [Shopify Remix app template](https://github.com/Shopify/shopify-app-template-remix) and converted to React Router.

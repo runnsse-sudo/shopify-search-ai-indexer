@@ -14,21 +14,166 @@ datasource db {
 }
 
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+enum IndexabilityState {
+  INDEXABLE
+  NOT_ACTIVE
+  NOT_PUBLISHED
+  UNKNOWN_PUBLICATION
+  MISSING_URL
+}
+
+enum IndexEventType {
+  CREATED
+  UPDATED
+  DELETED
+  INITIAL_SCAN
+  MANUAL_SCAN
+}
+
+enum IndexQueueStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+  SKIPPED
+}
+
+enum IndexProvider {
+  INTERNAL
+  BING
+  INDEXNOW
+  GOOGLE
+  AI_AUDIT
+}
+
+enum IndexQueueAction {
+  INDEX
+  DEINDEX
+}
+
+model Shop {
+  id                 String              @id @default(cuid())
+  domain             String              @unique
+  primaryDomain      String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  productIndexStates ProductIndexState[]
+  indexEvents        IndexEvent[]
+  queueItems         IndexQueueItem[]
+  indexAttempts      IndexAttempt[]
+}
+
+model ProductIndexState {
+  id                  String            @id @default(cuid())
+  shopId              String
+  shopifyProductGid   String
+  legacyProductId     String?
+  handle              String?
+  canonicalUrl        String?
+  candidateUrl        String?
+  title               String?
+  productStatus       String?
+  indexabilityState   IndexabilityState @default(UNKNOWN_PUBLICATION)
+  published           Boolean?
+  shopifyPublishedAt  DateTime?
+  deletedAt           DateTime?
+  shopifyUpdatedAt    DateTime?
+  contentHash         String?
+  previousContentHash String?
+  lastDetectedAt      DateTime          @default(now())
+  lastQueuedAt        DateTime?
+  lastIndexedAt       DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  shop                Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  events              IndexEvent[]
+  queueItems          IndexQueueItem[]
+
+  @@unique([shopId, shopifyProductGid])
+  @@index([shopId, indexabilityState])
+}
+
+model IndexEvent {
+  id                       String             @id @default(cuid())
+  shopId                   String
+  productIndexStateId      String?
+  shopifyProductGid        String
+  eventType                IndexEventType
+  meaningfulContentChanged Boolean
+  oldHash                  String?
+  newHash                  String?
+  metadata                 Json?
+  error                    String?
+  receivedAt               DateTime           @default(now())
+  shop                     Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  productIndexState        ProductIndexState? @relation(fields: [productIndexStateId], references: [id], onDelete: SetNull)
+
+  @@index([shopId, receivedAt])
+  @@index([shopifyProductGid, eventType])
+}
+
+model IndexQueueItem {
+  id                  String             @id @default(cuid())
+  shopId              String
+  productIndexStateId String?
+  shopifyProductGid   String
+  url                 String?
+  provider            IndexProvider      @default(INTERNAL)
+  action              IndexQueueAction   @default(INDEX)
+  status              IndexQueueStatus   @default(PENDING)
+  reason              String
+  dedupeKey           String?            @unique
+  retryCount          Int                @default(0)
+  maxRetries          Int                @default(5)
+  nextAttemptAt       DateTime           @default(now())
+  claimedAt           DateTime?
+  completedAt         DateTime?
+  lastError           String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  shop                Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  productIndexState   ProductIndexState? @relation(fields: [productIndexStateId], references: [id], onDelete: SetNull)
+  attempts            IndexAttempt[]
+
+  @@index([status, nextAttemptAt])
+  @@index([shopId, shopifyProductGid, provider, action, status])
+}
+
+model IndexAttempt {
+  id            String         @id @default(cuid())
+  shopId        String
+  queueItemId   String
+  provider      IndexProvider
+  attemptNumber Int
+  successful    Boolean
+  responseCode  Int?
+  responseBody  String?
+  error         String?
+  startedAt     DateTime       @default(now())
+  completedAt   DateTime?
+  shop          Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  queueItem     IndexQueueItem @relation(fields: [queueItemId], references: [id], onDelete: Cascade)
+
+  @@unique([queueItemId, attemptNumber])
+  @@index([shopId, provider, startedAt])
 }
