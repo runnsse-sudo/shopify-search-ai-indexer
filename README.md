@@ -16,6 +16,12 @@ Product fetches currently cap each product at 100 variants and 50 media items. B
 
 Google, Bing, IndexNow, OpenAI, Gemini, Perplexity, and other provider calls are deliberately not implemented. Existing Shopify agents/LLM infrastructure remains unchanged.
 
+## Phase 2 initial catalog scan
+
+The dashboard provides an explicit, request-driven initial scan. Each Continue or Resume action processes at most 25 products through Shopify Admin GraphQL cursor pagination, then persists the cursor and exact counters. Runs can be paused, resumed after restart or failure, and cancelled without removing collected product state. A short database-backed batch lease prevents overlapping requests from processing the same cursor.
+
+Products record the scan run that most recently saw them. This provides the foundation for future missing-product reconciliation, but Phase 2 deliberately does not infer deletion or enqueue removal solely from a missing marker. No scan runs automatically during startup, installation, authentication, or migration.
+
 ## Development and database
 
 ```sh

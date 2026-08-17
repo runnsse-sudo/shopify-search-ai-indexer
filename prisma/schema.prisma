@@ -71,6 +71,15 @@ enum IndexQueueAction {
   DEINDEX
 }
 
+enum ScanRunStatus {
+  PENDING
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
 model Shop {
   id                 String              @id @default(cuid())
   domain             String              @unique
@@ -81,6 +90,7 @@ model Shop {
   indexEvents        IndexEvent[]
   queueItems         IndexQueueItem[]
   indexAttempts      IndexAttempt[]
+  scanRuns           ScanRun[]
 }
 
 model ProductIndexState {
@@ -103,6 +113,7 @@ model ProductIndexState {
   lastDetectedAt      DateTime          @default(now())
   lastQueuedAt        DateTime?
   lastIndexedAt       DateTime?
+  lastSeenScanRunId   String?
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
   shop                Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
@@ -111,6 +122,33 @@ model ProductIndexState {
 
   @@unique([shopId, shopifyProductGid])
   @@index([shopId, indexabilityState])
+  @@index([shopId, lastSeenScanRunId])
+}
+
+model ScanRun {
+  id                   String        @id @default(cuid())
+  shopId               String
+  status               ScanRunStatus @default(PENDING)
+  activeKey            String?       @unique
+  cursor               String?
+  productsProcessed    Int           @default(0)
+  productsIndexable    Int           @default(0)
+  productsNonIndexable Int           @default(0)
+  productsChanged      Int           @default(0)
+  queueItemsCreated    Int           @default(0)
+  errorsCount          Int           @default(0)
+  startedAt            DateTime?
+  lastProgressAt       DateTime?
+  completedAt          DateTime?
+  errorMessage         String?
+  batchToken           String?       @unique
+  batchClaimedAt       DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  shop                 Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, createdAt])
+  @@index([status, lastProgressAt])
 }
 
 model IndexEvent {

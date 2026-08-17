@@ -23,6 +23,7 @@ export async function processProductDetection(input: {
   shopDomain: string;
   productGid: string;
   eventType: IndexEventType;
+  scanRunId?: string;
   metadata?: Record<string, string | number | boolean | null>;
 }) {
   const shop = await ensureShop(input.shopDomain);
@@ -74,6 +75,7 @@ export async function processProductDetection(input: {
           shopifyPublishedAt: product.publishedAt ? new Date(product.publishedAt) : null,
           shopifyUpdatedAt: new Date(product.updatedAt),
           contentHash: newHash,
+          lastSeenScanRunId: input.scanRunId,
         },
         update: {
           handle: product.handle,
@@ -89,6 +91,7 @@ export async function processProductDetection(input: {
           previousContentHash: contentChanged ? existing?.contentHash : existing?.previousContentHash,
           contentHash: newHash,
           lastDetectedAt: new Date(),
+          ...(input.scanRunId ? { lastSeenScanRunId: input.scanRunId } : {}),
         },
       });
 
@@ -108,6 +111,7 @@ export async function processProductDetection(input: {
             indexabilityChanged,
             onlineStoreUrl: product.onlineStoreUrl,
             publishedAt: product.publishedAt,
+            scanRunId: input.scanRunId ?? null,
           },
         },
       });
@@ -116,7 +120,7 @@ export async function processProductDetection(input: {
       if (transition?.action === "DEINDEX") {
         await cancelPendingForProductWithClient(tx, shop.id, product.id, "INDEX");
         if (existing?.canonicalUrl) {
-          await enqueueProductWithClient(tx, {
+          const enqueued = await enqueueProductWithClient(tx, {
             shopId: shop.id,
             productIndexStateId: state.id,
             shopifyProductGid: product.id,
@@ -124,11 +128,11 @@ export async function processProductDetection(input: {
             reason: transition.reason,
             action: "DEINDEX",
           });
-          queued = true;
+          queued = enqueued.created;
         }
       } else if (transition?.action === "INDEX") {
         await cancelPendingForProductWithClient(tx, shop.id, product.id, "DEINDEX");
-        await enqueueProductWithClient(tx, {
+        const enqueued = await enqueueProductWithClient(tx, {
           shopId: shop.id,
           productIndexStateId: state.id,
           shopifyProductGid: product.id,
@@ -136,7 +140,7 @@ export async function processProductDetection(input: {
           reason: transition.reason,
           action: "INDEX",
         });
-        queued = true;
+        queued = enqueued.created;
       }
 
       if (queued) {

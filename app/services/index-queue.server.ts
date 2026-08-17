@@ -22,11 +22,14 @@ export async function enqueueProductWithClient(
   const provider = input.provider ?? "INTERNAL";
   const action = input.action ?? "INDEX";
   const dedupeKey = createDedupeKey(input, provider, action);
-  return tx.indexQueueItem.upsert({
+  const existing = await tx.indexQueueItem.findUnique({ where: { dedupeKey } });
+  if (existing) return { item: existing, created: false };
+  const item = await tx.indexQueueItem.upsert({
     where: { dedupeKey },
     create: { ...input, provider, action, dedupeKey },
     update: {},
   });
+  return { item, created: true };
 }
 
 export async function enqueueProduct(input: EnqueueProductInput) {
