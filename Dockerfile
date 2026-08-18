@@ -11,6 +11,7 @@ COPY . .
 
 RUN npx prisma generate
 RUN npm run build
+RUN npm run build:scan-worker
 
 FROM node:20-alpine AS runtime
 
@@ -29,5 +30,6 @@ COPY prisma/migrations ./prisma/migrations
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=builder /app/build ./build
+COPY --from=builder /app/build-workers ./build-workers
 
 CMD ["npm", "run", "docker-start"]

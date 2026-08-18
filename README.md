@@ -22,6 +22,12 @@ The dashboard provides an explicit, request-driven initial scan. Each Continue o
 
 Products record the scan run that most recently saw them. This provides the foundation for future missing-product reconciliation, but Phase 2 deliberately does not infer deletion or enqueue removal solely from a missing marker. No scan runs automatically during startup, installation, authentication, or migration.
 
+## Cloud Run catalog scan worker
+
+The same production image includes a standalone worker invoked with `npm run scan-worker`. It never creates a scan: it resumes an existing `PENDING`, `RUNNING`, or `FAILED` run using the stored Shopify offline session and checkpoints progress in PostgreSQL after every Shopify page. Run one Cloud Run task per logical catalog scan. Dashboard pause and cancel actions are observed between batches, and external indexing providers are not called.
+
+Optional worker environment variables are `SCAN_RUN_ID`, `SCAN_SHOP_DOMAIN`, `SCAN_BATCH_SIZE` (default 100), `SCAN_MAX_BATCHES` (default 1000), and `SCAN_INTER_BATCH_DELAY_MS` (default 500). `SCAN_RUN_ID` is the strongest selector. Without either selector, the worker proceeds only when exactly one eligible scan exists.
+
 ## Development and database
 
 PostgreSQL is the required persistent database for development, staging, and production. Set `DATABASE_URL` to a PostgreSQL connection string; copy `.env.example` as a safe starting point and never commit real credentials.
