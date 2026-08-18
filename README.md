@@ -24,6 +24,8 @@ Products record the scan run that most recently saw them. This provides the foun
 
 ## Development and database
 
+PostgreSQL is the required persistent database for development, staging, and production. Set `DATABASE_URL` to a PostgreSQL connection string; copy `.env.example` as a safe starting point and never commit real credentials.
+
 ```sh
 npm install
 npx prisma migrate dev
@@ -31,7 +33,7 @@ npx prisma generate
 npm run dev
 ```
 
-Use `npx prisma migrate deploy` in deployed environments. Validation commands are `npx prisma format`, `npx prisma validate`, `npm run typecheck`, `npm run lint`, and `npm run build`.
+Use `npx prisma migrate deploy` in deployed environments; the existing `npm run setup` and Docker startup already use this production-safe command. SQLite was used only during pre-production development, and no production data migration was required when the migration history was replaced with the PostgreSQL baseline. Validation commands are `npx prisma format`, `npx prisma validate`, `npm run typecheck`, `npm run lint`, and `npm run build`.
 
 # Shopify App Template - React Router
 
@@ -114,11 +116,9 @@ For more information on the Shopify Dev MCP please read [the documentation](http
 
 ### Application Storage
 
-This template uses [Prisma](https://www.prisma.io/) to store session data, by default using an [SQLite](https://www.sqlite.org/index.html) database.
-The database is defined as a Prisma schema in `prisma/schema.prisma`.
+This application uses [Prisma](https://www.prisma.io/) with PostgreSQL for Shopify sessions and all indexing state. A valid `DATABASE_URL` is required. Deployments apply the committed PostgreSQL migration history with `prisma migrate deploy`.
 
-This use of SQLite works in production if your app runs as a single instance.
-The database that works best for you depends on the data your app needs and how it is queried.
+SQLite was development-only before the first production deployment; no production data migration was required. PostgreSQL is now the required database provider.
 Here’s a short list of databases providers that provide a free tier to get started:
 
 | Database   | Type             | Hosters                                                                                                                                                                                                                                    |
