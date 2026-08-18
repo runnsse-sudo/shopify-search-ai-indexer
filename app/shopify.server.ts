@@ -15,7 +15,10 @@ const shopify = shopifyApp({
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
-  distribution: AppDistribution.AppStore,
+  distribution:
+    process.env.SHOPIFY_APP_DISTRIBUTION === "single_merchant"
+      ? AppDistribution.SingleMerchant
+      : AppDistribution.AppStore,
   future: {
     expiringOfflineAccessTokens: true,
   },
