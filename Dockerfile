@@ -13,6 +13,7 @@ RUN npx prisma generate
 RUN npm run build
 RUN npm run build:scan-worker
 RUN npm run build:repair-worker
+RUN npm run build:queue-reconcile-worker
 
 FROM node:20-alpine AS runtime
 

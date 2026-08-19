@@ -30,6 +30,12 @@ Optional worker environment variables are `SCAN_RUN_ID`, `SCAN_SHOP_DOMAIN`, `SC
 
 To repair product-level errors from one completed initial scan, run the same image with `REPAIR_SCAN_RUN_ID` set and invoke `npm run repair-scan-errors`. The repair worker selects only failed `INITIAL_SCAN` events for that shop whose timestamps fall between the run's `startedAt` and `completedAt`, deduplicates product IDs, and processes them sequentially as `MANUAL_SCAN` events. Historical events do not contain a direct scan-run foreign key, so this timestamp window is intentionally conservative; review the structured summary before treating it as a complete historical attribution.
 
+Queue identity is one `PENDING` intent per shop, product, provider, and action. Its reason and URL describe the latest desired intent and are compacted into that pending slot. `PROCESSING` and terminal rows have no dedupe key, so one processing request and one newer pending successor may legitimately coexist. Audit queue integrity using `duplicatePendingIntentGroups`, `processingWithDedupeKey`, `pendingWithoutDedupeKey`, and `terminalWithDedupeKey` rather than treating all processing-plus-pending combinations as duplicates.
+
+The one-time INTERNAL queue reconciliation runs with `npm run reconcile-queue`. Set `QUEUE_RECONCILE_SHOP_DOMAIN`; it is a dry-run unless `QUEUE_RECONCILE_APPLY=true` exactly. APPLY aborts if any INTERNAL queue item for that shop is processing. It cancels older duplicate pending rows, preserves the newest URL/reason, and then normalizes each keeper's pending-intent key without deleting history.
+
+Production rollout order is strict: deploy the new enqueue semantics while provider execution remains disabled; do not enable consumers; run reconciliation dry-run and verify the old-key/duplicate plan; run APPLY; run dry-run again and require zero effective mutations; run the queue invariant audit; only then may provider implementation or execution proceed. Never reconcile first and leave the old reason-key service running, because it can recreate old-key pending rows after normalization.
+
 ## Development and database
 
 PostgreSQL is the required persistent database for development, staging, and production. Set `DATABASE_URL` to a PostgreSQL connection string; copy `.env.example` as a safe starting point and never commit real credentials.
