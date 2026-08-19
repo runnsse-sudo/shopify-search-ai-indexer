@@ -52,3 +52,7 @@ export function resolveUnscopedEligibleRun(runIds: string[]) {
 export function reachedWorkerSafetyCeiling(batchesExecuted: number, maxBatches: number) {
   return batchesExecuted >= maxBatches;
 }
+
+export function shouldRetryAuthentication(retriesUsed: number) {
+  return retriesUsed < 1;
+}

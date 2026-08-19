@@ -7,7 +7,9 @@ import {
   parseMaxBatches,
   reachedWorkerSafetyCeiling,
   resolveUnscopedEligibleRun,
+  shouldRetryAuthentication,
 } from "../app/services/scan-worker-control";
+import { isShopifyUnauthorizedError } from "../app/services/shopify-errors";
 import { unauthenticated } from "../app/shopify.server";
 
 let stopRequested = false;
@@ -84,9 +86,8 @@ async function main() {
 
   const runId = selected.id;
   const shopDomain = selected.shop.domain;
-  let failedResumeUsed = false;
+  let initialFailedResumeUsed = false;
   let batchesExecuted = 0;
-  let admin: Awaited<ReturnType<typeof unauthenticated.admin>>["admin"] | undefined;
 
   log("scan_worker_started", { runId, shop: shopDomain, batchSize, maxBatches, interBatchDelayMs });
 
@@ -100,11 +101,11 @@ async function main() {
     }
 
     if (action === "resume") {
-      if (failedResumeUsed) {
+      if (initialFailedResumeUsed) {
         throw new Error("Scan returned to FAILED after its controlled worker resume");
       }
       current = await resumeInitialScan(shopDomain, runId);
-      failedResumeUsed = true;
+      initialFailedResumeUsed = true;
       log("scan_worker_resumed_failed_run", { runId, shop: shopDomain, cursor: current.cursor });
     }
 
@@ -113,19 +114,56 @@ async function main() {
 
     const beforeProcessed = current.productsProcessed;
     const beforeCursor = current.cursor;
-    let result;
-    try {
-      if (!admin) ({ admin } = await unauthenticated.admin(shopDomain));
-      if (stopRequested) break;
-      result = await runNextBatch({ admin, shopDomain, runId, batchSize });
-    } catch (error) {
-      log("scan_worker_batch_failed", {
-        runId,
-        shop: shopDomain,
-        error: error instanceof Error ? error.message : "Unknown batch failure",
-      });
-      throw error;
+    let result: Awaited<ReturnType<typeof runNextBatch>> | undefined;
+    let authenticationRetries = 0;
+    while (!result) {
+      try {
+        const { admin, session } = await unauthenticated.admin(shopDomain);
+        log("scan_worker_admin_context_acquired", {
+          runId,
+          shop: shopDomain,
+          sessionExpiresAt: session.expires?.toISOString() ?? null,
+          authenticationRetries,
+        });
+        if (stopRequested) break;
+        result = await runNextBatch({
+          admin,
+          shopDomain,
+          runId,
+          batchSize,
+          refreshAdmin: async () => {
+            const refreshed = await unauthenticated.admin(shopDomain);
+            log("scan_worker_product_admin_context_refreshed", {
+              runId,
+              shop: shopDomain,
+              sessionExpiresAt: refreshed.session.expires?.toISOString() ?? null,
+            });
+            return refreshed.admin;
+          },
+        });
+      } catch (error) {
+        if (isShopifyUnauthorizedError(error) && shouldRetryAuthentication(authenticationRetries)) {
+          authenticationRetries += 1;
+          const resumed = await resumeInitialScan(shopDomain, runId);
+          log("scan_worker_authentication_retry", {
+            runId,
+            shop: shopDomain,
+            cursor: resumed.cursor,
+            authenticationRetries,
+          });
+          continue;
+        }
+        log("scan_worker_batch_failed", {
+          runId,
+          shop: shopDomain,
+          unauthorized: isShopifyUnauthorizedError(error),
+          error: error instanceof Error ? error.message : "Unknown batch failure",
+        });
+        throw error;
+      }
     }
+    if (!result) break;
+    initialFailedResumeUsed = false;
     batchesExecuted += 1;
 
     log("scan_worker_progress", {

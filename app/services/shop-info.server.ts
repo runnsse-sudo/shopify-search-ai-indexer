@@ -16,6 +16,16 @@ export async function fetchPrimaryShopDomain(admin: AdminGraphqlClient) {
   return body.data?.shop?.primaryDomain?.host ?? null;
 }
 
+export async function resolvePrimaryShopDomain(
+  admin: AdminGraphqlClient,
+  options?: { primaryDomain?: string | null },
+) {
+  if (options && Object.prototype.hasOwnProperty.call(options, "primaryDomain")) {
+    return options.primaryDomain ?? null;
+  }
+  return fetchPrimaryShopDomain(admin);
+}
+
 export function buildCanonicalProductUrl(primaryDomain: string | null, handle: string) {
   const domain = primaryDomain?.trim().toLowerCase();
   const cleanHandle = handle.trim();

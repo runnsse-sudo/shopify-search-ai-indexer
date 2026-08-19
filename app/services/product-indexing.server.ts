@@ -7,7 +7,7 @@ import {
 import { evaluateIndexability } from "./indexability.server";
 import { determineIndexTransition } from "./index-transition";
 import { createProductFingerprint } from "./product-fingerprint.server";
-import { buildCanonicalProductUrl, fetchPrimaryShopDomain } from "./shop-info.server";
+import { buildCanonicalProductUrl, resolvePrimaryShopDomain } from "./shop-info.server";
 import { fetchProductForIndexing, type AdminGraphqlClient } from "./shopify-product.server";
 
 export async function ensureShop(domain: string, primaryDomain?: string | null) {
@@ -24,13 +24,14 @@ export async function processProductDetection(input: {
   productGid: string;
   eventType: IndexEventType;
   scanRunId?: string;
+  primaryDomain?: string | null;
   metadata?: Record<string, string | number | boolean | null>;
 }) {
   const shop = await ensureShop(input.shopDomain);
   try {
     const [product, primaryDomain] = await Promise.all([
       fetchProductForIndexing(input.admin, input.productGid),
-      fetchPrimaryShopDomain(input.admin),
+      resolvePrimaryShopDomain(input.admin, input),
     ]);
     if (!product) throw new Error("Product was not returned by Admin GraphQL");
     if (primaryDomain) await ensureShop(input.shopDomain, primaryDomain);
@@ -156,7 +157,7 @@ export async function processProductDetection(input: {
         shopifyProductGid: input.productGid,
         eventType: input.eventType,
         meaningfulContentChanged: false,
-        metadata: input.metadata,
+        metadata: { ...input.metadata, scanRunId: input.scanRunId ?? null },
         error: message.slice(0, 4000),
       },
     });

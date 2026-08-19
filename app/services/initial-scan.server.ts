@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
 import prisma from "../db.server";
 import { ensureShop, processProductDetection } from "./product-indexing.server";
-import {
-  buildScanPageVariables,
-  initialScanActiveKey,
-  nextScanStatus,
-  type BatchCounts,
-} from "./scan-progress";
+import { buildScanPageVariables, initialScanActiveKey, nextScanStatus } from "./scan-progress";
+import { scanPageFailureUpdate, scanPageProgressUpdate } from "./scan-page-control";
+import { processScanPageProducts } from "./scan-product-page";
+import { fetchPrimaryShopDomain } from "./shop-info.server";
 import type { AdminGraphqlClient } from "./shopify-product.server";
 
 const DEFAULT_BATCH_SIZE = 25;
@@ -103,6 +101,7 @@ export async function runNextBatch(input: {
   shopDomain: string;
   runId: string;
   batchSize?: number;
+  refreshAdmin?: () => Promise<AdminGraphqlClient>;
 }) {
   const { shop, run } = await getOwnedRun(input.shopDomain, input.runId);
   if (!["PENDING", "RUNNING"].includes(run.status)) return run;
@@ -132,55 +131,40 @@ export async function runNextBatch(input: {
 
   const pageSize = Math.min(Math.max(input.batchSize ?? DEFAULT_BATCH_SIZE, 1), MAX_BATCH_SIZE);
   let page: Awaited<ReturnType<typeof fetchScanPage>>;
+  let primaryDomain: string | null;
+  let counts;
   try {
     page = await fetchScanPage(input.admin, run.cursor, pageSize);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown scan page failure";
-    await prisma.scanRun.updateMany({
-      where: { id: run.id, batchToken: token, status: "RUNNING" },
-      data: {
-        status: "FAILED",
-        errorMessage: message.slice(0, 4000),
-        errorsCount: { increment: 1 },
-        batchToken: null,
-        batchClaimedAt: null,
-      },
-    });
-    throw error;
-  }
-
-  const counts: BatchCounts = {
-    processed: 0,
-    indexable: 0,
-    nonIndexable: 0,
-    changed: 0,
-    queued: 0,
-    errors: 0,
-  };
-  for (const product of page.nodes) {
-    try {
-      const result = await processProductDetection({
-        admin: input.admin,
+    primaryDomain = await fetchPrimaryShopDomain(input.admin);
+    ({ counts } = await processScanPageProducts({
+      admin: input.admin,
+      primaryDomain,
+      productGids: page.nodes.map((product) => product.id),
+      refreshAdmin: input.refreshAdmin,
+      resolvePrimaryDomain: fetchPrimaryShopDomain,
+      processProduct: (admin, resolvedPrimaryDomain, productGid) => processProductDetection({
+        admin,
         shopDomain: input.shopDomain,
-        productGid: product.id,
+        productGid,
         eventType: "INITIAL_SCAN",
         scanRunId: run.id,
-      });
-      counts.processed += 1;
-      if (result.indexabilityState === "INDEXABLE") counts.indexable += 1;
-      else counts.nonIndexable += 1;
-      if (result.changed) counts.changed += 1;
-      if (result.queued) counts.queued += 1;
-    } catch (error) {
-      counts.processed += 1;
-      counts.errors += 1;
-      console.error("Initial scan product failed", {
-        shop: input.shopDomain,
-        productId: product.id,
-        scanRunId: run.id,
-        error,
-      });
-    }
+        primaryDomain: resolvedPrimaryDomain,
+      }),
+      onProductError: (productId, error) => {
+        console.error("Initial scan product failed", {
+          shop: input.shopDomain,
+          productId,
+          scanRunId: run.id,
+          error,
+        });
+      },
+    }));
+  } catch (error) {
+    await prisma.scanRun.updateMany({
+      where: { id: run.id, batchToken: token, status: "RUNNING" },
+      data: scanPageFailureUpdate(error),
+    });
+    throw error;
   }
 
   return prisma.$transaction(async (tx) => {
@@ -191,19 +175,11 @@ export async function runNextBatch(input: {
     return tx.scanRun.update({
       where: { id: run.id },
       data: {
-        cursor: page.pageInfo.endCursor,
-        productsProcessed: { increment: counts.processed },
-        productsIndexable: { increment: counts.indexable },
-        productsNonIndexable: { increment: counts.nonIndexable },
-        productsChanged: { increment: counts.changed },
-        queueItemsCreated: { increment: counts.queued },
-        errorsCount: { increment: counts.errors },
+        ...scanPageProgressUpdate(page.pageInfo.endCursor, counts),
         lastProgressAt: new Date(),
         status,
         completedAt: canComplete ? new Date() : current.completedAt,
         activeKey: canComplete ? null : current.activeKey,
-        batchToken: null,
-        batchClaimedAt: null,
       },
     });
   });

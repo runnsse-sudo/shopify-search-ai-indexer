@@ -28,6 +28,8 @@ The same production image includes a standalone worker invoked with `npm run sca
 
 Optional worker environment variables are `SCAN_RUN_ID`, `SCAN_SHOP_DOMAIN`, `SCAN_BATCH_SIZE` (default 100), `SCAN_MAX_BATCHES` (default 1000), and `SCAN_INTER_BATCH_DELAY_MS` (default 500). `SCAN_RUN_ID` is the strongest selector. Without either selector, the worker proceeds only when exactly one eligible scan exists.
 
+To repair product-level errors from one completed initial scan, run the same image with `REPAIR_SCAN_RUN_ID` set and invoke `npm run repair-scan-errors`. The repair worker selects only failed `INITIAL_SCAN` events for that shop whose timestamps fall between the run's `startedAt` and `completedAt`, deduplicates product IDs, and processes them sequentially as `MANUAL_SCAN` events. Historical events do not contain a direct scan-run foreign key, so this timestamp window is intentionally conservative; review the structured summary before treating it as a complete historical attribution.
+
 ## Development and database
 
 PostgreSQL is the required persistent database for development, staging, and production. Set `DATABASE_URL` to a PostgreSQL connection string; copy `.env.example` as a safe starting point and never commit real credentials.
