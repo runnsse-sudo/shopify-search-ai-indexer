@@ -3,11 +3,14 @@ import prisma from "../db.server";
 import {
   acquirePendingIntentSlot,
   createPendingIntentKey,
-  claimPendingTransition,
   pendingIntentRefresh,
-  processingFailureTransition,
-  retryRaceSupersededTransition,
 } from "./index-queue-intent";
+import {
+  claimNextWithClient,
+  markCompletedWithClient,
+  markFailedWithClient,
+  recoverExpiredProcessingWithClient,
+} from "./index-queue-orchestration";
 
 export type EnqueueProductInput = {
   shopId: string;
@@ -55,59 +58,39 @@ export async function enqueueProduct(input: EnqueueProductInput) {
 }
 
 export async function claimNext(provider: IndexProvider = "INTERNAL") {
-  return prisma.$transaction(async (tx) => {
-    const item = await tx.indexQueueItem.findFirst({
-      where: { provider, status: "PENDING", nextAttemptAt: { lte: new Date() } },
-      orderBy: [{ nextAttemptAt: "asc" }, { createdAt: "asc" }],
-    });
-    if (!item) return null;
-    const claimed = await tx.indexQueueItem.updateMany({
-      where: { id: item.id, status: "PENDING" },
-      data: claimPendingTransition(new Date()),
-    });
-    if (claimed.count === 0) return null;
-    return tx.indexQueueItem.findUniqueOrThrow({ where: { id: item.id } });
+  return prisma.$transaction((tx) => claimNextWithClient(tx, provider));
+}
+
+export async function markCompleted(id: string, expectedClaimedAt: Date) {
+  return markCompletedWithClient(prisma, id, expectedClaimedAt);
+}
+
+export async function markFailed(id: string, expectedClaimedAt: Date, error: string, retryAt?: Date) {
+  return markFailedWithClient({
+    client: prisma,
+    runTransaction: (operation) => prisma.$transaction(operation),
+    isUniqueConstraintError: (caught) =>
+      caught instanceof Prisma.PrismaClientKnownRequestError && caught.code === "P2002",
+    id,
+    expectedClaimedAt,
+    error,
+    retryAt,
   });
 }
 
-export async function markCompleted(id: string) {
-  return prisma.indexQueueItem.update({
-    where: { id },
-    data: { status: "COMPLETED", completedAt: new Date(), claimedAt: null, lastError: null, dedupeKey: null },
+export async function recoverExpiredProcessing(input: {
+  provider: IndexProvider;
+  leaseBefore?: Date;
+  leaseDurationMs?: number;
+  limit?: number;
+}) {
+  return recoverExpiredProcessingWithClient({
+    client: prisma,
+    runTransaction: (operation) => prisma.$transaction(operation),
+    isUniqueConstraintError: (caught) =>
+      caught instanceof Prisma.PrismaClientKnownRequestError && caught.code === "P2002",
+    ...input,
   });
-}
-
-export async function markFailed(id: string, error: string, retryAt?: Date) {
-  try {
-    return await prisma.$transaction(async (tx) => {
-      const item = await tx.indexQueueItem.findUniqueOrThrow({ where: { id } });
-      const pendingIntentKey = createPendingIntentKey(item);
-      const successor = await tx.indexQueueItem.findUnique({ where: { dedupeKey: pendingIntentKey } });
-      const retryCount = item.retryCount + 1;
-      const transition = processingFailureTransition({
-        retryCount: item.retryCount,
-        maxRetries: item.maxRetries,
-        error,
-        retryAt: retryAt ?? new Date(Date.now() + 60_000 * 2 ** Math.min(retryCount, 8)),
-        pendingIntentKey,
-        hasPendingSuccessor: Boolean(successor && successor.id !== item.id),
-        now: new Date(),
-      });
-      const updated = await tx.indexQueueItem.updateMany({
-        where: { id, status: "PROCESSING" },
-        data: transition,
-      });
-      if (updated.count === 0) return tx.indexQueueItem.findUniqueOrThrow({ where: { id } });
-      return tx.indexQueueItem.findUniqueOrThrow({ where: { id } });
-    });
-  } catch (caught) {
-    if (!(caught instanceof Prisma.PrismaClientKnownRequestError) || caught.code !== "P2002") throw caught;
-    await prisma.indexQueueItem.updateMany({
-      where: { id, status: "PROCESSING" },
-      data: retryRaceSupersededTransition(error, new Date()),
-    });
-    return prisma.indexQueueItem.findUniqueOrThrow({ where: { id } });
-  }
 }
 
 export async function cancelPendingForProduct(shopId: string, shopifyProductGid: string) {

@@ -12,8 +12,14 @@ import {
   compactPendingIntent,
   createPendingIntentKey,
   pendingIntentRefresh,
+  isExpiredProcessingClaim,
+  normalizeRecoveryLimit,
+  ownsProcessingClaim,
+  processingCompletionTransition,
   processingFailureTransition,
+  processingLeaseRecoveryTransition,
   retryRaceSupersededTransition,
+  resolveProcessingLeaseBefore,
 } from "../app/services/index-queue-intent.ts";
 
 const identity = {
@@ -66,8 +72,103 @@ test("claim clears the pending slot key", () => {
   assert.deepEqual(claimPendingTransition(new Date("2026-08-20T10:00:00Z")), {
     status: "PROCESSING",
     claimedAt: new Date("2026-08-20T10:00:00Z"),
+    completedAt: null,
     dedupeKey: null,
   });
+});
+
+test("claim token establishes ownership and only the correct owner can complete", () => {
+  const token = new Date("2026-08-20T10:00:00Z");
+  const item = { id: "queue-1", ...claimPendingTransition(token) };
+  assert.equal(ownsProcessingClaim(item, "queue-1", token), true);
+  assert.equal(ownsProcessingClaim(item, "queue-1", new Date("2026-08-20T10:00:01Z")), false);
+  assert.deepEqual(processingCompletionTransition(new Date("2026-08-20T10:01:00Z")), {
+    status: "COMPLETED",
+    completedAt: new Date("2026-08-20T10:01:00Z"),
+    claimedAt: null,
+    dedupeKey: null,
+    lastError: null,
+  });
+});
+
+test("failure ownership rejects an old token and correct owner can restore one pending key", () => {
+  const token = new Date("2026-08-20T10:00:00Z");
+  const item = { id: "queue-1", ...claimPendingTransition(token) };
+  assert.equal(ownsProcessingClaim(item, item.id, token), true);
+  assert.equal(ownsProcessingClaim(item, item.id, new Date("2026-08-20T09:59:00Z")), false);
+  const transition = processingFailureTransition({
+    retryCount: 0,
+    maxRetries: 5,
+    error: "temporary",
+    retryAt: new Date("2026-08-20T10:02:00Z"),
+    pendingIntentKey: "pending-key",
+    hasPendingSuccessor: false,
+    now: new Date("2026-08-20T10:01:00Z"),
+  });
+  assert.equal(transition.status, "PENDING");
+  assert.equal(transition.dedupeKey, "pending-key");
+  assert.equal(transition.claimedAt, null);
+});
+
+test("failure with a newer successor skips old processing work without a second key", () => {
+  const transition = processingFailureTransition({
+    retryCount: 0,
+    maxRetries: 5,
+    error: "temporary",
+    retryAt: new Date(),
+    pendingIntentKey: "pending-key",
+    hasPendingSuccessor: true,
+    now: new Date(),
+  });
+  assert.equal(transition.status, "SKIPPED");
+  assert.equal(transition.dedupeKey, null);
+  assert.equal(transition.claimedAt, null);
+});
+
+test("expired processing recovery requeues without a successor and skips with one", () => {
+  const base = {
+    pendingIntentKey: "pending-key",
+    now: new Date("2026-08-20T10:10:00Z"),
+    nextAttemptAt: new Date("2026-08-20T10:10:00Z"),
+  };
+  const requeued = processingLeaseRecoveryTransition({ ...base, hasPendingSuccessor: false });
+  assert.equal(requeued.status, "PENDING");
+  assert.equal(requeued.dedupeKey, "pending-key");
+  assert.equal(requeued.claimedAt, null);
+  const superseded = processingLeaseRecoveryTransition({ ...base, hasPendingSuccessor: true });
+  assert.equal(superseded.status, "SKIPPED");
+  assert.equal(superseded.dedupeKey, null);
+  assert.equal(superseded.claimedAt, null);
+});
+
+test("fresh processing is not expired and recovery is bounded", () => {
+  const item = { status: "PROCESSING", claimedAt: new Date("2026-08-20T10:00:00Z") };
+  assert.equal(isExpiredProcessingClaim(item, new Date("2026-08-20T09:59:00Z")), false);
+  assert.equal(isExpiredProcessingClaim(item, new Date("2026-08-20T10:01:00Z")), true);
+  assert.equal(normalizeRecoveryLimit(undefined), 100);
+  assert.equal(normalizeRecoveryLimit(25), 25);
+  assert.throws(() => normalizeRecoveryLimit(0), /between 1 and 1000/);
+  assert.throws(() => normalizeRecoveryLimit(1001), /between 1 and 1000/);
+  assert.equal(resolveProcessingLeaseBefore({
+    leaseDurationMs: 60_000,
+    now: new Date("2026-08-20T10:00:00Z"),
+  }).toISOString(), "2026-08-20T09:59:00.000Z");
+  assert.throws(() => resolveProcessingLeaseBefore({ leaseDurationMs: 0 }), /positive number/);
+  assert.throws(() => resolveProcessingLeaseBefore({
+    leaseBefore: new Date(),
+    leaseDurationMs: 60_000,
+  }), /not both/);
+});
+
+test("old recovery ownership cannot mutate a newer processing claim", () => {
+  const staleToken = new Date("2026-08-20T09:00:00Z");
+  const newerClaim = {
+    id: "queue-1",
+    status: "PROCESSING",
+    claimedAt: new Date("2026-08-20T10:00:00Z"),
+  };
+  assert.equal(ownsProcessingClaim(newerClaim, newerClaim.id, staleToken), false);
+  assert.equal(ownsProcessingClaim(newerClaim, newerClaim.id, newerClaim.claimedAt), true);
 });
 
 test("processing plus repeated changes creates and compacts one logical pending successor", () => {
@@ -107,6 +208,7 @@ test("retry transitions restore a slot, skip when superseded, and terminate with
   const terminal = processingFailureTransition({ ...base, retryCount: 2, hasPendingSuccessor: false });
   assert.equal(terminal.status, "FAILED");
   assert.equal(terminal.dedupeKey, null);
+  assert.equal(terminal.claimedAt, null);
 });
 
 test("unique-key retry race fallback safely makes the older row terminal", () => {

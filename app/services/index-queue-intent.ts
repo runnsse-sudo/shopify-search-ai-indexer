@@ -51,7 +51,94 @@ export async function acquirePendingIntentSlot<T>(input: {
 }
 
 export function claimPendingTransition(now: Date) {
-  return { status: "PROCESSING" as const, claimedAt: now, dedupeKey: null };
+  return {
+    status: "PROCESSING" as const,
+    claimedAt: now,
+    completedAt: null,
+    dedupeKey: null,
+  };
+}
+
+export function ownsProcessingClaim(
+  item: { id: string; status: string; claimedAt: Date | null } | null,
+  id: string,
+  expectedClaimedAt: Date,
+) {
+  return Boolean(
+    item &&
+    item.id === id &&
+    item.status === "PROCESSING" &&
+    item.claimedAt?.getTime() === expectedClaimedAt.getTime(),
+  );
+}
+
+export function processingCompletionTransition(completedAt: Date) {
+  return {
+    status: "COMPLETED" as const,
+    completedAt,
+    claimedAt: null,
+    dedupeKey: null,
+    lastError: null,
+  };
+}
+
+export function isExpiredProcessingClaim(
+  item: { status: string; claimedAt: Date | null },
+  leaseBefore: Date,
+) {
+  return item.status === "PROCESSING" && Boolean(item.claimedAt && item.claimedAt < leaseBefore);
+}
+
+export function normalizeRecoveryLimit(limit: number | undefined) {
+  if (limit === undefined) return 100;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    throw new Error("Processing recovery limit must be an integer between 1 and 1000");
+  }
+  return limit;
+}
+
+export function resolveProcessingLeaseBefore(input: {
+  leaseBefore?: Date;
+  leaseDurationMs?: number;
+  now?: Date;
+}) {
+  if (input.leaseBefore && input.leaseDurationMs !== undefined) {
+    throw new Error("Provide leaseBefore or leaseDurationMs, not both");
+  }
+  if (input.leaseBefore) {
+    if (Number.isNaN(input.leaseBefore.getTime())) throw new Error("leaseBefore must be a valid date");
+    return input.leaseBefore;
+  }
+  const duration = input.leaseDurationMs ?? 15 * 60_000;
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new Error("leaseDurationMs must be a positive number");
+  }
+  return new Date((input.now ?? new Date()).getTime() - duration);
+}
+
+export function processingLeaseRecoveryTransition(input: {
+  hasPendingSuccessor: boolean;
+  pendingIntentKey: string;
+  now: Date;
+  nextAttemptAt: Date;
+}) {
+  if (input.hasPendingSuccessor) {
+    return {
+      status: "SKIPPED" as const,
+      claimedAt: null,
+      dedupeKey: null,
+      completedAt: input.now,
+      lastError: "Expired processing lease superseded by newer pending intent",
+    };
+  }
+  return {
+    status: "PENDING" as const,
+    claimedAt: null,
+    dedupeKey: input.pendingIntentKey,
+    completedAt: null,
+    nextAttemptAt: input.nextAttemptAt,
+    lastError: "Expired processing lease recovered for retry",
+  };
 }
 
 export function retryRaceSupersededTransition(error: string, now: Date) {
