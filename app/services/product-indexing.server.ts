@@ -1,4 +1,4 @@
-import type { IndexEventType } from "@prisma/client";
+import { Prisma, type IndexEventType } from "@prisma/client";
 import prisma from "../db.server";
 import {
   cancelPendingForProductWithClient,
@@ -7,6 +7,12 @@ import {
 import { evaluateIndexability } from "./indexability.server";
 import { determineIndexTransition } from "./index-transition";
 import { createProductFingerprint } from "./product-fingerprint.server";
+import {
+  decideProductSnapshotOrder,
+  parseShopifyUpdatedAt,
+  staleDetectionResult,
+  staleScanBookkeepingUpdate,
+} from "./product-snapshot-order";
 import { buildCanonicalProductUrl, resolvePrimaryShopDomain } from "./shop-info.server";
 import { fetchProductForIndexing, type AdminGraphqlClient } from "./shopify-product.server";
 
@@ -29,11 +35,11 @@ export async function processProductDetection(input: {
 }) {
   const shop = await ensureShop(input.shopDomain);
   try {
-    const [product, primaryDomain] = await Promise.all([
-      fetchProductForIndexing(input.admin, input.productGid),
-      resolvePrimaryShopDomain(input.admin, input),
-    ]);
+    const product = await fetchProductForIndexing(input.admin, input.productGid);
+    const snapshotObservedAt = new Date();
     if (!product) throw new Error("Product was not returned by Admin GraphQL");
+    const shopifyUpdatedAt = parseShopifyUpdatedAt(product.updatedAt);
+    const primaryDomain = await resolvePrimaryShopDomain(input.admin, input);
     if (primaryDomain) await ensureShop(input.shopDomain, primaryDomain);
 
     const candidateUrl = buildCanonicalProductUrl(primaryDomain, product.handle);
@@ -48,6 +54,44 @@ export async function processProductDetection(input: {
       const existing = await tx.productIndexState.findUnique({
         where: { shopId_shopifyProductGid: { shopId: shop.id, shopifyProductGid: product.id } },
       });
+      const snapshotOrder = decideProductSnapshotOrder({
+        existing,
+        incomingShopifyUpdatedAt: shopifyUpdatedAt,
+        incomingSnapshotObservedAt: snapshotObservedAt,
+        incomingContentHash: newHash,
+      });
+      if (!snapshotOrder.accept && existing) {
+        // A stale scan may record catalog membership only. Snapshot fields,
+        // lastDetectedAt, and queue intent remain untouched.
+        const scanUpdate = staleScanBookkeepingUpdate(input.scanRunId);
+        if (input.scanRunId) {
+          await tx.productIndexState.update({ where: { id: existing.id }, data: scanUpdate });
+        }
+        await tx.indexEvent.create({
+          data: {
+            shopId: shop.id,
+            productIndexStateId: existing.id,
+            shopifyProductGid: product.id,
+            eventType: input.eventType,
+            meaningfulContentChanged: false,
+            oldHash: existing.contentHash,
+            newHash,
+            metadata: {
+              ...input.metadata,
+              staleSnapshot: true,
+              staleReason: snapshotOrder.staleReason,
+              incomingShopifyUpdatedAt: shopifyUpdatedAt.toISOString(),
+              storedShopifyUpdatedAt: existing.shopifyUpdatedAt?.toISOString() ?? null,
+              incomingSnapshotObservedAt: snapshotObservedAt.toISOString(),
+              storedLastDetectedAt: existing.lastDetectedAt.toISOString(),
+              incomingIndexability: indexabilityState,
+              storedIndexability: existing.indexabilityState,
+              scanRunId: input.scanRunId ?? null,
+            },
+          },
+        });
+        return staleDetectionResult(existing.indexabilityState);
+      }
       const contentChanged = existing?.contentHash !== newHash;
       const wasIndexable = existing?.indexabilityState === "INDEXABLE" && !existing.deletedAt;
       const isIndexable = indexabilityState === "INDEXABLE";
@@ -74,8 +118,9 @@ export async function processProductDetection(input: {
           indexabilityState,
           published: Boolean(product.onlineStoreUrl),
           shopifyPublishedAt: product.publishedAt ? new Date(product.publishedAt) : null,
-          shopifyUpdatedAt: new Date(product.updatedAt),
+          shopifyUpdatedAt,
           contentHash: newHash,
+          lastDetectedAt: snapshotObservedAt,
           lastSeenScanRunId: input.scanRunId,
         },
         update: {
@@ -88,10 +133,10 @@ export async function processProductDetection(input: {
           published: Boolean(product.onlineStoreUrl),
           shopifyPublishedAt: product.publishedAt ? new Date(product.publishedAt) : null,
           deletedAt: null,
-          shopifyUpdatedAt: new Date(product.updatedAt),
+          shopifyUpdatedAt,
           previousContentHash: contentChanged ? existing?.contentHash : existing?.previousContentHash,
           contentHash: newHash,
-          lastDetectedAt: new Date(),
+          lastDetectedAt: snapshotObservedAt,
           ...(input.scanRunId ? { lastSeenScanRunId: input.scanRunId } : {}),
         },
       });
@@ -147,8 +192,8 @@ export async function processProductDetection(input: {
       if (queued) {
         await tx.productIndexState.update({ where: { id: state.id }, data: { lastQueuedAt: new Date() } });
       }
-      return { changed: contentChanged || indexabilityChanged, queued, indexabilityState };
-    });
+      return { changed: contentChanged || indexabilityChanged, queued, stale: false, indexabilityState };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown product processing error";
     await prisma.indexEvent.create({
@@ -172,12 +217,23 @@ export async function processProductDeletion(input: {
 }) {
   const shop = await ensureShop(input.shopDomain);
   return prisma.$transaction(async (tx) => {
-    const state = await tx.productIndexState.findUnique({
+    let state = await tx.productIndexState.findUnique({
       where: { shopId_shopifyProductGid: { shopId: shop.id, shopifyProductGid: input.productGid } },
     });
+    const hadState = Boolean(state);
     const alreadyDeleted = Boolean(state?.deletedAt);
 
-    if (state && !alreadyDeleted) {
+    if (!state) {
+      state = await tx.productIndexState.create({
+        data: {
+          shopId: shop.id,
+          shopifyProductGid: input.productGid,
+          deletedAt: new Date(),
+          published: false,
+          indexabilityState: "NOT_PUBLISHED",
+        },
+      });
+    } else if (!alreadyDeleted) {
       await cancelPendingForProductWithClient(tx, shop.id, input.productGid, "INDEX");
       if (state.canonicalUrl) {
         await enqueueProductWithClient(tx, {
@@ -195,7 +251,6 @@ export async function processProductDeletion(input: {
           deletedAt: new Date(),
           published: false,
           indexabilityState: "NOT_PUBLISHED",
-          lastDetectedAt: new Date(),
         },
       });
     }
@@ -206,11 +261,11 @@ export async function processProductDeletion(input: {
         productIndexStateId: state?.id,
         shopifyProductGid: input.productGid,
         eventType: "DELETED",
-        meaningfulContentChanged: Boolean(state && !alreadyDeleted),
+        meaningfulContentChanged: hadState && !alreadyDeleted,
         oldHash: state?.contentHash,
         metadata: { ...input.metadata, alreadyDeleted, previousPublicUrl: state?.canonicalUrl ?? null },
       },
     });
     return { alreadyDeleted };
-  });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
