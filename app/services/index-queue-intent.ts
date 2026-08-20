@@ -162,6 +162,22 @@ export function assertQueueReconciliationCanApply(processingRowsFound: number) {
   }
 }
 
+export function assertReconciliationCancellationCount(expected: number, actual: number) {
+  if (actual !== expected) {
+    throw new Error(
+      `Queue reconciliation cancellation count mismatch: expected ${expected}, received ${actual}`,
+    );
+  }
+}
+
+export function assertReconciliationNormalizationCount(expected: number, actual: number) {
+  if (actual !== expected) {
+    throw new Error(
+      `Queue reconciliation normalization count mismatch: expected ${expected}, received ${actual}`,
+    );
+  }
+}
+
 export function auditQueueInvariants(items: ReconciliationItem[]) {
   const pendingGroups = new Map<string, number>();
   let processingWithDedupeKey = 0;

@@ -5,6 +5,8 @@ import {
   applyQueueReconciliationPlan,
   auditQueueInvariants,
   assertQueueReconciliationCanApply,
+  assertReconciliationCancellationCount,
+  assertReconciliationNormalizationCount,
   buildQueueReconciliationPlan,
   claimPendingTransition,
   compactPendingIntent,
@@ -157,6 +159,45 @@ test("reconciliation normalizes an old single key and APPLY rejects processing r
   assert.equal(plan.singleRowsToNormalize, 1);
   assert.doesNotThrow(() => assertQueueReconciliationCanApply(0));
   assert.throws(() => assertQueueReconciliationCanApply(1), /zero PROCESSING/);
+});
+
+test("reconciliation keeper selection uses descending ID as the createdAt tie-break", () => {
+  const createdAt = new Date("2026-08-20T10:00:00Z");
+  const olderId = {
+    ...identity,
+    id: "item-a",
+    status: "PENDING",
+    dedupeKey: `${createPendingIntentKey(identity)}|OLD`,
+    url: "https://old",
+    createdAt,
+  };
+  const newerId = {
+    ...identity,
+    id: "item-z",
+    status: "PENDING",
+    dedupeKey: `${createPendingIntentKey(identity)}|NEW`,
+    url: "https://new",
+    createdAt,
+  };
+  const plan = buildQueueReconciliationPlan([olderId, newerId]);
+  assert.deepEqual(plan.cancellations, [{ id: "item-a", keeperId: "item-z" }]);
+  assert.deepEqual(plan.normalizations, [{
+    id: "item-z",
+    dedupeKey: createPendingIntentKey(identity),
+  }]);
+});
+
+test("each reconciliation mutation count is checked independently", () => {
+  assert.doesNotThrow(() => assertReconciliationCancellationCount(70, 70));
+  assert.doesNotThrow(() => assertReconciliationNormalizationCount(16_882, 16_882));
+  assert.throws(
+    () => assertReconciliationCancellationCount(70, 69),
+    /cancellation count mismatch/,
+  );
+  assert.throws(
+    () => assertReconciliationNormalizationCount(16_882, 16_881),
+    /normalization count mismatch/,
+  );
 });
 
 test("queue audit distinguishes pending duplicates from processing and terminal key violations", () => {

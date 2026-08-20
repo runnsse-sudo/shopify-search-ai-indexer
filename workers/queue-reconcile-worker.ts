@@ -2,6 +2,8 @@ import { Prisma } from "@prisma/client";
 import prisma from "../app/db.server";
 import {
   assertQueueReconciliationCanApply,
+  assertReconciliationCancellationCount,
+  assertReconciliationNormalizationCount,
   buildQueueReconciliationPlan,
 } from "../app/services/index-queue-intent";
 
@@ -76,30 +78,60 @@ async function main() {
     });
     const currentPlan = buildQueueReconciliationPlan(currentPending);
 
-    let count = 0;
-    for (const cancellation of currentPlan.cancellations) {
-      const result = await tx.indexQueueItem.updateMany({
-        where: { id: cancellation.id, shopId: shop.id, provider: "INTERNAL", status: "PENDING" },
+    const cancellationIds = currentPlan.cancellations.map((cancellation) => cancellation.id);
+    const cancellationResult = cancellationIds.length === 0
+      ? { count: 0 }
+      : await tx.indexQueueItem.updateMany({
+        where: {
+          id: { in: cancellationIds },
+          shopId: shop.id,
+          provider: "INTERNAL",
+          status: "PENDING",
+        },
         data: {
           status: "CANCELLED",
           completedAt: new Date(),
           claimedAt: null,
           dedupeKey: null,
-          lastError: `Superseded during pending-intent reconciliation by ${cancellation.keeperId}`.slice(0, 4000),
+          lastError: "Superseded during pending-intent reconciliation",
         },
       });
-      count += result.count;
-    }
-    for (const normalization of currentPlan.normalizations) {
-      const result = await tx.indexQueueItem.updateMany({
-        where: { id: normalization.id, shopId: shop.id, provider: "INTERNAL", status: "PENDING" },
-        data: { dedupeKey: normalization.dedupeKey },
-      });
-      if (result.count !== 1) throw new Error(`Pending keeper changed during reconciliation: ${normalization.id}`);
-      count += result.count;
-    }
-    return { mutated: count, plan: currentPlan };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    assertReconciliationCancellationCount(
+      currentPlan.cancellations.length,
+      cancellationResult.count,
+    );
+
+    const normalizationResult = await tx.$executeRaw(Prisma.sql`
+      UPDATE "IndexQueueItem"
+      SET "dedupeKey" =
+        "shopId" || '|' ||
+        "shopifyProductGid" || '|' ||
+        "provider"::text || '|' ||
+        "action"::text
+      WHERE "shopId" = ${shop.id}
+        AND "provider"::text = ${"INTERNAL"}
+        AND "status"::text = ${"PENDING"}
+        AND "dedupeKey" IS DISTINCT FROM (
+          "shopId" || '|' ||
+          "shopifyProductGid" || '|' ||
+          "provider"::text || '|' ||
+          "action"::text
+        )
+    `);
+    assertReconciliationNormalizationCount(
+      currentPlan.normalizations.length,
+      normalizationResult,
+    );
+
+    return {
+      mutated: cancellationResult.count + normalizationResult,
+      plan: currentPlan,
+    };
+  }, {
+    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    maxWait: 10_000,
+    timeout: 60_000,
+  });
 
   log("queue_reconcile_completed", {
     shop: shop.domain,
