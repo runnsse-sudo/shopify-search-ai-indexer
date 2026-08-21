@@ -6,3 +6,8 @@ export function extractShopifyWebhookMetadata(headers: Headers, productId: unkno
     triggeredAt: headers.get("x-shopify-triggered-at"),
   };
 }
+
+export function requireShopifyWebhookId(metadata: { webhookId: string | null }) {
+  const webhookId = metadata.webhookId?.trim();
+  return webhookId || null;
+}

@@ -15,6 +15,15 @@ import {
 } from "./product-snapshot-order";
 import { buildCanonicalProductUrl, resolvePrimaryShopDomain } from "./shop-info.server";
 import { fetchProductForIndexing, type AdminGraphqlClient } from "./shopify-product.server";
+import { acquireWebhookReceiptWithClient } from "./webhook-idempotency.server";
+import { runSerializableTransactionWithRetry } from "./serializable-transaction-retry.server";
+
+type ProductWebhookIdentity = {
+  webhookId: string;
+  eventId?: string | null;
+  topic: "products/create" | "products/update";
+  triggeredAt?: string | null;
+};
 
 export async function ensureShop(domain: string, primaryDomain?: string | null) {
   return prisma.shop.upsert({
@@ -32,6 +41,7 @@ export async function processProductDetection(input: {
   scanRunId?: string;
   primaryDomain?: string | null;
   metadata?: Record<string, string | number | boolean | null>;
+  webhook?: ProductWebhookIdentity;
 }) {
   const shop = await ensureShop(input.shopDomain);
   try {
@@ -50,7 +60,26 @@ export async function processProductDetection(input: {
     });
     const newHash = createProductFingerprint(product);
 
-    return await prisma.$transaction(async (tx) => {
+    return await runSerializableTransactionWithRetry(() => prisma.$transaction(async (tx) => {
+      if (input.webhook) {
+        const receipt = await acquireWebhookReceiptWithClient(tx, {
+          shopId: shop.id,
+          webhookId: input.webhook.webhookId,
+          eventId: input.webhook.eventId,
+          topic: input.webhook.topic,
+          shopifyProductGid: product.id,
+          triggeredAt: input.webhook.triggeredAt,
+        });
+        if (receipt === "DUPLICATE") {
+          return {
+            duplicateWebhook: true as const,
+            changed: false,
+            queued: false,
+            stale: false,
+            indexabilityState,
+          };
+        }
+      }
       const existing = await tx.productIndexState.findUnique({
         where: { shopId_shopifyProductGid: { shopId: shop.id, shopifyProductGid: product.id } },
       });
@@ -193,7 +222,7 @@ export async function processProductDetection(input: {
         await tx.productIndexState.update({ where: { id: state.id }, data: { lastQueuedAt: new Date() } });
       }
       return { changed: contentChanged || indexabilityChanged, queued, stale: false, indexabilityState };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown product processing error";
     await prisma.indexEvent.create({
@@ -214,9 +243,28 @@ export async function processProductDeletion(input: {
   shopDomain: string;
   productGid: string;
   metadata?: Record<string, string | number | boolean | null>;
+  webhook?: {
+    webhookId: string;
+    eventId?: string | null;
+    topic: "products/delete";
+    triggeredAt?: string | null;
+  };
 }) {
   const shop = await ensureShop(input.shopDomain);
-  return prisma.$transaction(async (tx) => {
+  return runSerializableTransactionWithRetry(() => prisma.$transaction(async (tx) => {
+    if (input.webhook) {
+      const receipt = await acquireWebhookReceiptWithClient(tx, {
+        shopId: shop.id,
+        webhookId: input.webhook.webhookId,
+        eventId: input.webhook.eventId,
+        topic: input.webhook.topic,
+        shopifyProductGid: input.productGid,
+        triggeredAt: input.webhook.triggeredAt,
+      });
+      if (receipt === "DUPLICATE") {
+        return { duplicateWebhook: true as const, alreadyDeleted: false };
+      }
+    }
     let state = await tx.productIndexState.findUnique({
       where: { shopId_shopifyProductGid: { shopId: shop.id, shopifyProductGid: input.productGid } },
     });
@@ -267,5 +315,5 @@ export async function processProductDeletion(input: {
       },
     });
     return { alreadyDeleted };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

@@ -91,6 +91,22 @@ model Shop {
   queueItems         IndexQueueItem[]
   indexAttempts      IndexAttempt[]
   scanRuns           ScanRun[]
+  webhookReceipts    WebhookReceipt[]
+}
+
+model WebhookReceipt {
+  id                String   @id @default(cuid())
+  shopId            String
+  webhookId         String
+  eventId           String?
+  topic             String
+  shopifyProductGid String?
+  triggeredAt       String?
+  processedAt       DateTime @default(now())
+  shop              Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, webhookId])
+  @@index([shopId, processedAt])
 }
 
 model ProductIndexState {

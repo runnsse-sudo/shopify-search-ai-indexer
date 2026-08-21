@@ -40,6 +40,12 @@ An already-produced provider plan can now be materialized atomically into provid
 
 IndexNow execution remains disabled, while ownership-verification readiness is modeled defensively in a pure, unwired gate. A root key file can cover the whole matching host; a non-root key file covers only its path scope. Consequently Shopify app-proxy paths such as `/apps/` and `/tools/` do not verify normal `/products/` URLs, and redirect-based root-key workarounds are not assumed valid. No `write_app_proxy` or other Shopify scope was added, no credentials or keys are stored, and no provider request occurs.
 
+## Durable product webhook delivery idempotency
+
+Shopify may deliver a product webhook more than once. Product create, update, and delete processing records a durable receipt keyed by `shopId + webhookId`. The receipt is inserted in the same Serializable database transaction as product state, event, and queue mutations, so a processing failure rolls the receipt back and allows Shopify to retry. Once processing commits successfully, a duplicate delivery authenticates normally and returns success without repeating any durable product, event, or queue mutation.
+
+Initial scans and scan-error repair do not supply webhook identity and retain their existing behavior. This protection adds no Shopify scope, makes no external provider call, creates no `IndexAttempt`, and does not change the disabled IndexNow execution policy.
+
 The one-time INTERNAL queue reconciliation runs with `npm run reconcile-queue`. Set `QUEUE_RECONCILE_SHOP_DOMAIN`; it is a dry-run unless `QUEUE_RECONCILE_APPLY=true` exactly. APPLY aborts if any INTERNAL queue item for that shop is processing. It cancels older duplicate pending rows, preserves the newest URL/reason, and then normalizes each keeper's pending-intent key without deleting history.
 
 Production rollout order is strict: deploy the new enqueue semantics while provider execution remains disabled; do not enable consumers; run reconciliation dry-run and verify the old-key/duplicate plan; run APPLY; run dry-run again and require zero effective mutations; run the queue invariant audit; only then may provider implementation or execution proceed. Never reconcile first and leave the old reason-key service running, because it can recreate old-key pending rows after normalization.
