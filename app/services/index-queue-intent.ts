@@ -12,13 +12,15 @@ export function createPendingIntentKey(input: PendingIntentIdentity) {
 export function pendingIntentRefresh(input: {
   url: string | null;
   reason: string;
-  productIndexStateId?: string;
+  productIndexStateId?: string | null;
   now: Date;
 }) {
   return {
     url: input.url,
     reason: input.reason,
-    ...(input.productIndexStateId ? { productIndexStateId: input.productIndexStateId } : {}),
+    ...(input.productIndexStateId !== undefined
+      ? { productIndexStateId: input.productIndexStateId }
+      : {}),
     nextAttemptAt: input.now,
     lastError: null,
   };

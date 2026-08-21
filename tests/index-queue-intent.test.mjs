@@ -68,6 +68,30 @@ test("pending compaction retains one slot and refreshes URL and reason without r
   }).created, true);
 });
 
+test("pending refresh explicitly clears the product state relation when given null", () => {
+  const now = new Date("2026-08-21T10:00:00.000Z");
+  const result = pendingIntentRefresh({
+    url: "https://shop.example/products/widget",
+    reason: "CONTENT_CHANGED",
+    productIndexStateId: null,
+    now,
+  });
+
+  assert.equal(result.productIndexStateId, null);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, "productIndexStateId"), true);
+});
+
+test("pending refresh preserves the product state relation when the ID is undefined", () => {
+  const result = pendingIntentRefresh({
+    url: "https://shop.example/products/widget",
+    reason: "CONTENT_CHANGED",
+    productIndexStateId: undefined,
+    now: new Date("2026-08-21T10:00:00.000Z"),
+  });
+
+  assert.equal(Object.prototype.hasOwnProperty.call(result, "productIndexStateId"), false);
+});
+
 test("claim clears the pending slot key", () => {
   assert.deepEqual(claimPendingTransition(new Date("2026-08-20T10:00:00Z")), {
     status: "PROCESSING",

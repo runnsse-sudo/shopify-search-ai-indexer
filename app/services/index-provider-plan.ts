@@ -38,7 +38,7 @@ export type ProductPushPlan = Readonly<{
   }>[];
 }>;
 
-function validateProductUrl(url: string | null) {
+export function validateProductPushUrl(url: string | null) {
   const candidate = url?.trim();
   if (!candidate) return { url: null, rejectionReason: "URL_REQUIRED" } as const;
 
@@ -58,7 +58,7 @@ export function planProductPush(input: ProductPushPlanInput): ProductPushPlan {
     return { rejectionReason: "SOURCE_PROVIDER_NOT_INTERNAL", targets: [], skipped: [] };
   }
 
-  const validatedUrl = validateProductUrl(input.url);
+  const validatedUrl = validateProductPushUrl(input.url);
   if (validatedUrl.rejectionReason) {
     return { rejectionReason: validatedUrl.rejectionReason, targets: [], skipped: [] };
   }
