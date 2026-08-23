@@ -22,15 +22,15 @@ export async function enqueueProduct(input: EnqueueProductInput) {
   return prisma.$transaction((tx) => enqueueProductWithClient(tx, input));
 }
 
-export async function claimNext(provider: IndexProvider = "INTERNAL") {
-  return prisma.$transaction((tx) => claimNextWithClient(tx, provider));
+export async function claimNext(provider: IndexProvider = "INTERNAL", shopId?: string) {
+  return prisma.$transaction((tx) => claimNextWithClient(tx, provider, undefined, shopId));
 }
 
 export async function markCompleted(id: string, expectedClaimedAt: Date) {
   return markCompletedWithClient(prisma, id, expectedClaimedAt);
 }
 
-export async function markFailed(id: string, expectedClaimedAt: Date, error: string, retryAt?: Date) {
+export async function markFailed(id: string, expectedClaimedAt: Date, error: string, retryAt?: Date, terminal = false) {
   return markFailedWithClient({
     client: prisma,
     runTransaction: (operation) => prisma.$transaction(operation),
@@ -40,6 +40,7 @@ export async function markFailed(id: string, expectedClaimedAt: Date, error: str
     expectedClaimedAt,
     error,
     retryAt,
+    terminal,
   });
 }
 
@@ -48,6 +49,7 @@ export async function recoverExpiredProcessing(input: {
   leaseBefore?: Date;
   leaseDurationMs?: number;
   limit?: number;
+  shopId?: string;
 }) {
   return recoverExpiredProcessingWithClient({
     client: prisma,

@@ -233,6 +233,13 @@ test("retry transitions restore a slot, skip when superseded, and terminate with
   assert.equal(terminal.status, "FAILED");
   assert.equal(terminal.dedupeKey, null);
   assert.equal(terminal.claimedAt, null);
+  const explicitlyTerminal = processingFailureTransition({
+    ...base,
+    hasPendingSuccessor: false,
+    terminal: true,
+  });
+  assert.equal(explicitlyTerminal.status, "FAILED");
+  assert.equal(explicitlyTerminal.dedupeKey, null);
 });
 
 test("unique-key retry race fallback safely makes the older row terminal", () => {

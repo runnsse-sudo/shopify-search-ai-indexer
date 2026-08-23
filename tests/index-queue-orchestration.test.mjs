@@ -42,6 +42,22 @@ test("claimNext uses one exact ownership token and clears pending-only fields", 
   assert.equal(updateArgs.data.completedAt, null);
 });
 
+test("claimNext scopes selection by shop only when supplied", async () => {
+  for (const shopId of [undefined, "shop-1"]) {
+    let selection;
+    const client = { indexQueueItem: {
+      findFirst: async (args) => { selection = args; return null; },
+    } };
+    await claimNextWithClient(client, "INDEXNOW", () => fixedNow, shopId);
+    assert.deepEqual(selection.where, {
+      provider: "INDEXNOW",
+      status: "PENDING",
+      nextAttemptAt: { lte: fixedNow },
+      ...(shopId ? { shopId } : {}),
+    });
+  }
+});
+
 test("markCompleted predicates on exact ownership and reports loss without an unconditional update", async () => {
   for (const [count, expected] of [[1, "completed"], [0, "ownership_lost"]]) {
     const calls = [];
@@ -158,6 +174,29 @@ test("expired recovery is scoped and owner-protected with and without successor"
     assert.deepEqual(harness.mutationArgs[0].where, { id: "queue-1", status: "PROCESSING", claimedAt: token });
     assert.equal(harness.mutationArgs[0].data.status, successor ? "SKIPPED" : "PENDING");
     assert.equal(successor ? result.skipped : result.requeued, 1);
+  }
+});
+
+test("expired recovery scopes candidate selection by shop only when supplied", async () => {
+  for (const shopId of [undefined, "shop-1"]) {
+    let selection;
+    const client = { indexQueueItem: {
+      findMany: async (args) => { selection = args; return []; },
+    } };
+    await recoverExpiredProcessingWithClient({
+      client,
+      runTransaction: async () => { throw new Error("not called"); },
+      isUniqueConstraintError: () => false,
+      provider: "INDEXNOW",
+      leaseBefore: fixedNow,
+      shopId,
+    });
+    assert.deepEqual(selection.where, {
+      provider: "INDEXNOW",
+      status: "PROCESSING",
+      claimedAt: { lt: fixedNow },
+      ...(shopId ? { shopId } : {}),
+    });
   }
 });
 

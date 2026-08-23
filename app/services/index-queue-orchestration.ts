@@ -18,9 +18,10 @@ export async function claimNextWithClient(
   tx: QueueClient,
   provider: IndexProvider,
   now: () => Date = () => new Date(),
+  shopId?: string,
 ) {
   const item = await tx.indexQueueItem.findFirst({
-    where: { provider, status: "PENDING", nextAttemptAt: { lte: now() } },
+    where: { provider, status: "PENDING", nextAttemptAt: { lte: now() }, ...(shopId ? { shopId } : {}) },
     orderBy: [{ nextAttemptAt: "asc" }, { createdAt: "asc" }],
   });
   if (!item) return null;
@@ -62,6 +63,7 @@ export async function markFailedWithClient(input: {
   error: string;
   retryAt?: Date;
   now?: () => Date;
+  terminal?: boolean;
 }) {
   const now = input.now ?? (() => new Date());
   try {
@@ -81,6 +83,7 @@ export async function markFailedWithClient(input: {
         pendingIntentKey,
         hasPendingSuccessor: Boolean(successor && successor.id !== item.id),
         now: now(),
+        terminal: input.terminal,
       });
       const updated = await tx.indexQueueItem.updateMany({
         where: { id: input.id, status: "PROCESSING", claimedAt: input.expectedClaimedAt },
@@ -111,12 +114,13 @@ export async function recoverExpiredProcessingWithClient(input: {
   leaseDurationMs?: number;
   limit?: number;
   now?: () => Date;
+  shopId?: string;
 }) {
   const now = input.now ?? (() => new Date());
   const limit = normalizeRecoveryLimit(input.limit);
   const leaseBefore = resolveProcessingLeaseBefore({ ...input, now: now() });
   const candidates = await input.client.indexQueueItem.findMany({
-    where: { provider: input.provider, status: "PROCESSING", claimedAt: { lt: leaseBefore } },
+    where: { provider: input.provider, status: "PROCESSING", claimedAt: { lt: leaseBefore }, ...(input.shopId ? { shopId: input.shopId } : {}) },
     orderBy: [{ claimedAt: "asc" }, { id: "asc" }],
     take: limit,
   });

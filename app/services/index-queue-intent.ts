@@ -162,10 +162,11 @@ export function processingFailureTransition(input: {
   pendingIntentKey: string;
   hasPendingSuccessor: boolean;
   now: Date;
+  terminal?: boolean;
 }) {
   const retryCount = input.retryCount + 1;
   const lastError = input.error.slice(0, 4000);
-  if (retryCount >= input.maxRetries) {
+  if (input.terminal || retryCount >= input.maxRetries) {
     return {
       status: "FAILED" as const,
       retryCount,
