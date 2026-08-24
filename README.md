@@ -302,3 +302,16 @@ Shopify:
 Internationalization:
 
 - [Internationalizing your app](https://shopify.dev/docs/apps/best-practices/internationalization/getting-started)
+## Controlled provider materialization worker
+
+The production image also contains a standalone provider-materialization worker invoked with `npm run provider-materialization-worker`. It is not wired to HTTP, webhooks, startup, authentication, scans, or the IndexNow executor.
+
+The worker remains fully disabled unless `PROVIDER_MATERIALIZATION_ENABLED=true` is supplied exactly. When enabled, `PROVIDER_MATERIALIZATION_SHOP_DOMAIN` is mandatory and the worker is still read-only by default. Queue writes require the additional exact setting `PROVIDER_MATERIALIZATION_DRY_RUN=false`.
+
+Materialization currently supports only the existing `INTERNAL -> INDEXNOW` product-push path. It calls the shared `planProductPush` and `materializeProductPushPlanWithClient` implementation rather than creating provider rows directly. `INTERNAL` source rows remain durable source intent and are not completed or consumed by materialization.
+
+`PROVIDER_MATERIALIZATION_MAX_ITEMS` defaults to 1 and is bounded to 100. `PROVIDER_MATERIALIZATION_PAGE_SIZE` defaults to 100 and is bounded to 250. `PROVIDER_MATERIALIZATION_MAX_SCANNED` defaults to 5000 and is bounded to 50000.
+
+A source is skipped when an `INDEXNOW` row for the same product and action has an `updatedAt` timestamp equal to or newer than the source. If the source is refreshed later, it becomes eligible for a new downstream materialization. The worker re-checks source state and downstream freshness inside a serializable transaction before any queue write.
+
+The materialization worker never invokes IndexNow or creates `IndexAttempt` records. Provider execution remains a separate Cloud Run Job with its own independent `INDEXNOW_EXECUTION_ENABLED` hard gate.

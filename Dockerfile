@@ -15,6 +15,7 @@ RUN npm run build:scan-worker
 RUN npm run build:repair-worker
 RUN npm run build:queue-reconcile-worker
 RUN npm run build:indexnow-worker
+RUN npm run build:provider-materialization-worker
 
 FROM node:20-alpine AS runtime
 
