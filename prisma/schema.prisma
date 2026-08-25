@@ -92,6 +92,36 @@ model Shop {
   indexAttempts      IndexAttempt[]
   scanRuns           ScanRun[]
   webhookReceipts    WebhookReceipt[]
+  providerConfig     ShopProviderConfig?
+}
+
+model ShopProviderConfig {
+  id                              String   @id @default(cuid())
+  shopId                          String   @unique
+  indexNowEnabled                 Boolean  @default(false)
+  indexNowAllowedHost             String?
+  indexNowCredentialCiphertext    String?
+  indexNowCredentialIv            String?
+  indexNowCredentialTag           String?
+  indexNowOwnershipVerifiedAt     DateTime?
+  indexNowOwnershipLastCheckedAt  DateTime?
+  indexNowOwnershipError          String?
+  materializationLastRunAt        DateTime?
+  indexNowLastRunAt               DateTime?
+  createdAt                       DateTime @default(now())
+  updatedAt                       DateTime @updatedAt
+  shop                            Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([indexNowEnabled, indexNowOwnershipVerifiedAt])
+  @@index([indexNowEnabled, materializationLastRunAt])
+  @@index([indexNowEnabled, indexNowLastRunAt])
+}
+
+model ProviderAutomationLease {
+  key        String    @id
+  ownerToken String?
+  leaseUntil DateTime?
+  updatedAt  DateTime  @updatedAt
 }
 
 model WebhookReceipt {

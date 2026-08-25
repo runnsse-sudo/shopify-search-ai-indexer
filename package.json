@@ -27,7 +27,11 @@
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
     "vite": "vite",
-    "typecheck": "react-router typegen && tsc --noEmit"
+    "typecheck": "react-router typegen && tsc --noEmit",
+    "build:provider-materialization-multishop-worker": "esbuild workers/provider-materialization-multishop-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build-workers/provider-materialization-multishop-worker.mjs",
+    "build:indexnow-multishop-worker": "esbuild workers/indexnow-multishop-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build-workers/indexnow-multishop-worker.mjs",
+    "provider-materialization-multishop-worker": "npm run setup && node ./build-workers/provider-materialization-multishop-worker.mjs",
+    "indexnow-multishop-worker": "npm run setup && node ./build-workers/indexnow-multishop-worker.mjs"
   },
   "type": "module",
   "engines": {

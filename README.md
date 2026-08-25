@@ -315,3 +315,34 @@ Materialization currently supports only the existing `INTERNAL -> INDEXNOW` prod
 A source is skipped when an `INDEXNOW` row for the same product and action has an `updatedAt` timestamp equal to or newer than the source. If the source is refreshed later, it becomes eligible for a new downstream materialization. The worker re-checks source state and downstream freshness inside a serializable transaction before any queue write.
 
 The materialization worker never invokes IndexNow or creates `IndexAttempt` records. Provider execution remains a separate Cloud Run Job with its own independent `INDEXNOW_EXECUTION_ENABLED` hard gate.
+
+## Multi-shop provider architecture
+
+The application is multi-tenant. Each Shopify installation is represented by its own `Shop` row and provider configuration is stored per shop in `ShopProviderConfig`.
+
+IndexNow credentials are not stored as plaintext database columns. The credential payload is encrypted with AES-256-GCM using the deployment-level `PROVIDER_CONFIG_MASTER_KEY`. Each shop has independent provider enablement, allowed host, credentials and ownership verification state.
+
+A shop is eligible for IndexNow only when:
+
+- IndexNow is explicitly enabled for that shop.
+- the shop still uses the same primary domain that was verified.
+- encrypted credentials are present.
+- root ownership has been verified.
+
+New installations therefore fail closed.
+
+The production-tested single-shop materialization and IndexNow workers remain unchanged. Multi-shop workers orchestrate those shop-scoped workers sequentially.
+
+IndexNow credentials are decrypted just in time for one tenant and are not loaded for the other selected shops.
+
+`materializationLastRunAt` and `indexNowLastRunAt` provide fair tenant rotation when the number of enabled shops is larger than one worker run can process.
+
+`ProviderAutomationLease` prevents overlapping executions of the same multi-shop automation.
+
+Global automation remains independently fail closed:
+
+- `PROVIDER_MATERIALIZATION_MULTISHOP_ENABLED=true` is required for multi-shop materialization.
+- materialization writes additionally require `PROVIDER_MATERIALIZATION_MULTISHOP_DRY_RUN=false` exactly.
+- `INDEXNOW_MULTISHOP_ENABLED=true` is required for multi-shop IndexNow execution.
+
+Cloud Scheduler must remain paused until the new image, additive migration, encryption master key, Robotto migration and a second Shopify tenant have been separately production-verified.
