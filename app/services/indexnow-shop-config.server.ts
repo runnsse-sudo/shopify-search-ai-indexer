@@ -9,6 +9,7 @@ import {
   generateIndexNowKey,
   indexNowShopReadinessReason,
   normalizeIndexNowHost,
+  validateIndexNowOwnershipResponseUrl,
   validateIndexNowCredentialPayload,
   type IndexNowCredentialPayload,
 } from "./indexnow-shop-config";
@@ -457,6 +458,11 @@ export async function verifyIndexNowShopOwnership(
         `IndexNow ownership URL returned HTTP ${response.status}`,
       );
     }
+
+    validateIndexNowOwnershipResponseUrl(
+      response.url,
+      payload.allowedHost,
+    );
 
     const body =
       (await response.text())

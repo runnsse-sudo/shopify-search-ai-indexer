@@ -153,6 +153,41 @@ export function validateIndexNowCredentialPayload(
   } as const;
 }
 
+export function validateIndexNowOwnershipResponseUrl(
+  value: string,
+  allowedHost: string,
+) {
+  const normalizedHost =
+    normalizeIndexNowHost(
+      allowedHost,
+    );
+
+  let finalUrl: URL;
+
+  try {
+    finalUrl =
+      new URL(value);
+  } catch {
+    throw new Error(
+      "IndexNow ownership response URL is invalid",
+    );
+  }
+
+  if (
+    finalUrl.protocol !== "https:" ||
+    finalUrl.username ||
+    finalUrl.password ||
+    finalUrl.hash ||
+    finalUrl.host !== normalizedHost
+  ) {
+    throw new Error(
+      "IndexNow ownership verification redirected outside the verified shop host",
+    );
+  }
+
+  return finalUrl.href;
+}
+
 export function indexNowShopReadinessReason(
   input: IndexNowShopReadinessInput,
 ) {

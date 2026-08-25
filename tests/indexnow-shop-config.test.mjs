@@ -6,6 +6,7 @@ import {
   indexNowShopReadinessReason,
   normalizeIndexNowHost,
   validateIndexNowCredentialPayload,
+  validateIndexNowOwnershipResponseUrl,
 } from "../app/services/indexnow-shop-config.ts";
 
 test(
@@ -143,6 +144,36 @@ test(
           "changed.example.com",
       }),
       "PRIMARY_DOMAIN_CHANGED",
+    );
+  },
+);
+test(
+  "ownership redirect remains on verified host",
+  () => {
+    assert.equal(
+      validateIndexNowOwnershipResponseUrl(
+        "https://www.example.com/cdn/shop/files/key.txt",
+        "www.example.com",
+      ),
+      "https://www.example.com/cdn/shop/files/key.txt",
+    );
+
+    assert.throws(
+      () =>
+        validateIndexNowOwnershipResponseUrl(
+          "https://cdn.other-example.com/key.txt",
+          "www.example.com",
+        ),
+      /outside the verified shop host/,
+    );
+
+    assert.throws(
+      () =>
+        validateIndexNowOwnershipResponseUrl(
+          "http://www.example.com/key.txt",
+          "www.example.com",
+        ),
+      /outside the verified shop host/,
     );
   },
 );
