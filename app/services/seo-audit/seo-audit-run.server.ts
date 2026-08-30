@@ -135,6 +135,29 @@ async function getOwnedRun(
   return { shop, run };
 }
 
+async function getCurrentSeoAuditRun(
+  runId: string,
+) {
+  return prisma.seoAuditRun
+    .findUniqueOrThrow({
+      where: {
+        id: runId,
+      },
+    });
+}
+
+function ownsSeoAuditBatch(
+  run: {
+    status: string;
+    batchToken: string | null;
+  },
+  token: string,
+) {
+  return (
+    run.status === "RUNNING" &&
+    run.batchToken === token
+  );
+}
 export async function resumeSeoAudit(
   shopDomain: string,
   runId: string,
@@ -342,8 +365,12 @@ export async function runNextSeoAuditBatch(input: {
     products.length > batchSize;
 
   if (targets.length === 0) {
-    return prisma.seoAuditRun.update({
-      where: { id: run.id },
+    await prisma.seoAuditRun.updateMany({
+      where: {
+        id: run.id,
+        status: "RUNNING",
+        batchToken: token,
+      },
       data: {
         status: "COMPLETED",
         activeKey: null,
@@ -353,6 +380,10 @@ export async function runNextSeoAuditBatch(input: {
         lastProgressAt: new Date(),
       },
     });
+
+    return getCurrentSeoAuditRun(
+      run.id,
+    );
   }
 
 
@@ -369,6 +400,20 @@ export async function runNextSeoAuditBatch(input: {
 
     if (!requestedUrl) {
       continue;
+    }
+
+    const beforeFetch =
+      await getCurrentSeoAuditRun(
+        run.id,
+      );
+
+    if (
+      !ownsSeoAuditBatch(
+        beforeFetch,
+        token,
+      )
+    ) {
+      return beforeFetch;
     }
 
     try {
@@ -424,6 +469,19 @@ export async function runNextSeoAuditBatch(input: {
           }),
         );
 
+      const beforeSuccessPersist =
+        await getCurrentSeoAuditRun(
+          run.id,
+        );
+
+      if (
+        !ownsSeoAuditBatch(
+          beforeSuccessPersist,
+          token,
+        )
+      ) {
+        return beforeSuccessPersist;
+      }
       await prisma.seoAuditPage.upsert({
         where: {
           runId_shopifyProductGid: {
@@ -528,6 +586,20 @@ export async function runNextSeoAuditBatch(input: {
 
 
     } catch (error) {
+      const beforeFailurePersist =
+        await getCurrentSeoAuditRun(
+          run.id,
+        );
+
+      if (
+        !ownsSeoAuditBatch(
+          beforeFailurePersist,
+          token,
+        )
+      ) {
+        return beforeFailurePersist;
+      }
+
       const message =
         error instanceof Error
           ? error.message
@@ -641,7 +713,10 @@ export async function runNextSeoAuditBatch(input: {
         });
 
       if (
-        current.batchToken !== token
+        !ownsSeoAuditBatch(
+          current,
+          token,
+        )
       ) {
         return current;
       }
@@ -696,63 +771,80 @@ export async function runNextSeoAuditBatch(input: {
       const completed =
         !hasMore;
 
-      return tx.seoAuditRun.update({
-        where: {
-          id: run.id,
-        },
-        data: {
-          cursorProductGid:
-            targets[
-              targets.length - 1
-            ].shopifyProductGid,
+      const checkpoint =
+        await tx.seoAuditRun.updateMany({
+          where: {
+            id: run.id,
+            status: "RUNNING",
+            batchToken: token,
+          },
+          data: {
+            cursorProductGid:
+              targets[
+                targets.length - 1
+              ].shopifyProductGid,
 
-          pagesProcessed:
-            persistedPages.length,
+            pagesProcessed:
+              persistedPages.length,
 
-          pagesSucceeded,
+            pagesSucceeded,
 
-          pagesFailed,
+            pagesFailed,
 
-          criticalCount:
-            exactCounts.criticalCount,
+            criticalCount:
+              exactCounts.criticalCount,
 
-          highCount:
-            exactCounts.highCount,
+            highCount:
+              exactCounts.highCount,
 
-          mediumCount:
-            exactCounts.mediumCount,
+            mediumCount:
+              exactCounts.mediumCount,
 
-          lowCount:
-            exactCounts.lowCount,
+            lowCount:
+              exactCounts.lowCount,
 
-          infoCount:
-            exactCounts.infoCount,
+            infoCount:
+              exactCounts.infoCount,
 
-          lastProgressAt:
-            new Date(),
+            lastProgressAt:
+              new Date(),
 
-          status:
-            completed
-              ? "COMPLETED"
-              : "RUNNING",
+            status:
+              completed
+                ? "COMPLETED"
+                : "RUNNING",
 
-          activeKey:
-            completed
-              ? null
-              : current.activeKey,
+            ...(completed
+              ? {
+                  activeKey: null,
+                  completedAt:
+                    new Date(),
+                }
+              : {}),
 
-          completedAt:
-            completed
-              ? new Date()
-              : current.completedAt,
+            batchToken:
+              null,
 
-          batchToken:
-            null,
+            batchClaimedAt:
+              null,
+          },
+        });
 
-          batchClaimedAt:
-            null,
-        },
-      });
+      if (checkpoint.count === 0) {
+        return tx.seoAuditRun
+          .findUniqueOrThrow({
+            where: {
+              id: run.id,
+            },
+          });
+      }
+
+      return tx.seoAuditRun
+        .findUniqueOrThrow({
+          where: {
+            id: run.id,
+          },
+        });
     },
   );
 }

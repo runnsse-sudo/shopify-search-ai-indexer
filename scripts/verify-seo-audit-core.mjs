@@ -127,6 +127,114 @@ assert.equal(
   false,
 );
 
+const productGroupHtml = `
+<!doctype html>
+<html>
+<head>
+  <title>Grouped Product</title>
+  <meta
+    name="description"
+    content="Grouped product test"
+  >
+  <link
+    rel="canonical"
+    href="https://example.com/products/grouped-product"
+  >
+</head>
+<body>
+  <h1>Grouped Product</h1>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "ProductGroup",
+    "@id": "https://example.com/products/grouped-product#group",
+    "name": "Grouped Product",
+    "url": "https://example.com/products/grouped-product",
+    "hasVariant": [
+      {
+        "@type": "Product",
+        "@id": "https://example.com/products/grouped-product#variant-red",
+        "name": "Grouped Product",
+        "url": "https://example.com/products/grouped-product",
+        "sku": "GROUP-RED",
+        "offers": {
+          "@type": "Offer",
+          "price": "199.00",
+          "priceCurrency": "SEK"
+        }
+      },
+      {
+        "@type": "Product",
+        "@id": "https://example.com/products/grouped-product#variant-blue",
+        "name": "Grouped Product",
+        "url": "https://example.com/products/grouped-product",
+        "sku": "GROUP-BLUE",
+        "offers": {
+          "@type": "Offer",
+          "price": "249.00",
+          "priceCurrency": "SEK"
+        }
+      }
+    ]
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "@id": "https://example.com/products/grouped-product#breadcrumb",
+    "itemListElement": []
+  }
+  </script>
+</body>
+</html>
+`;
+
+const productGroup =
+  auditHtml({
+    requestedUrl:
+      "https://example.com/products/grouped-product",
+
+    finalUrl:
+      "https://example.com/products/grouped-product",
+
+    statusCode: 200,
+
+    html:
+      productGroupHtml,
+
+    expectedPageType:
+      "PRODUCT",
+  });
+
+const productGroupCodes =
+  new Set(
+    productGroup.issues.map(
+      (issue) => issue.code,
+    ),
+  );
+
+assert.equal(
+  productGroup.jsonLd
+    .typeCounts.ProductGroup,
+  1,
+);
+
+assert.equal(
+  productGroup.jsonLd
+    .typeCounts.Product,
+  2,
+);
+
+assert.equal(
+  productGroupCodes.has(
+    "CONFLICTING_PRODUCT_SCHEMA",
+  ),
+  false,
+  "Legitimate ProductGroup variants must not be treated as conflicting duplicate Product schema.",
+);
 const brokenHtml = `
 <!doctype html>
 <html>

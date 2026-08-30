@@ -460,11 +460,18 @@ export default function SeoAudit() {
     <s-page heading="SEO Audit">
       <s-section heading="Read-only storefront audit">
         <s-paragraph>
-          Runn audits the rendered
-          storefront without changing
+          Runn audits the server-returned
+          storefront HTML without changing
           products, theme, structured
           data, redirects, sitemaps or
           IndexNow configuration.
+        </s-paragraph>
+
+        <s-paragraph>
+          Client-side-only markup is not
+          browser-rendered in this phase
+          and may require a later rendered
+          audit for complete coverage.
         </s-paragraph>
 
         <s-unordered-list>

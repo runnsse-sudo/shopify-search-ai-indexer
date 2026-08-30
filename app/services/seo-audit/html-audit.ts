@@ -281,51 +281,209 @@ function productComparableFields(node: JsonLdNode) {
   return result;
 }
 
+const PRODUCT_IDENTITY_FIELDS = [
+  "sku",
+  "gtin",
+  "gtin8",
+  "gtin12",
+  "gtin13",
+  "gtin14",
+  "mpn",
+] as const;
+
+function normalizeIdentityValue(
+  value: string,
+) {
+  return value
+    .trim()
+    .toLowerCase();
+}
+
+function sameProductEntity(
+  left: JsonLdNode,
+  right: JsonLdNode,
+) {
+  if (
+    left.id &&
+    right.id &&
+    normalizeIdentityValue(left.id) ===
+      normalizeIdentityValue(right.id)
+  ) {
+    return true;
+  }
+
+  if (
+    !left.url ||
+    !right.url ||
+    normalizeIdentityValue(left.url) !==
+      normalizeIdentityValue(right.url)
+  ) {
+    return false;
+  }
+
+  for (
+    const field
+    of PRODUCT_IDENTITY_FIELDS
+  ) {
+    const leftValue =
+      asString(left.raw[field]);
+
+    const rightValue =
+      asString(right.raw[field]);
+
+    if (
+      leftValue &&
+      rightValue &&
+      normalizeIdentityValue(leftValue) ===
+        normalizeIdentityValue(rightValue)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function detectProductConflicts(
   productNodes: JsonLdNode[],
 ): SeoAuditIssue[] {
-  if (productNodes.length < 2) return [];
-
-  const allFields = new Set<string>();
-
-  for (const node of productNodes) {
-    Object.keys(productComparableFields(node)).forEach((field) =>
-      allFields.add(field),
-    );
+  if (productNodes.length < 2) {
+    return [];
   }
 
-  const conflicts: Record<string, string[]> = {};
+  const conflictingPairs: Array<{
+    left: {
+      id: string | null;
+      url: string | null;
+      name: string | null;
+      scriptIndex: number;
+      path: string;
+    };
+    right: {
+      id: string | null;
+      url: string | null;
+      name: string | null;
+      scriptIndex: number;
+      path: string;
+    };
+    conflicts: Record<
+      string,
+      string[]
+    >;
+  }> = [];
 
-  for (const field of allFields) {
-    const values = new Set<string>();
+  for (
+    let leftIndex = 0;
+    leftIndex < productNodes.length;
+    leftIndex += 1
+  ) {
+    for (
+      let rightIndex =
+        leftIndex + 1;
+      rightIndex < productNodes.length;
+      rightIndex += 1
+    ) {
+      const left =
+        productNodes[leftIndex];
 
-    for (const node of productNodes) {
-      const comparable = productComparableFields(node);
-      const value = comparable[field];
+      const right =
+        productNodes[rightIndex];
 
-      if (value) {
-        values.add(value);
+      if (
+        !sameProductEntity(
+          left,
+          right,
+        )
+      ) {
+        continue;
       }
-    }
 
-    if (values.size > 1) {
-      conflicts[field] = [...values];
+      const leftFields =
+        productComparableFields(left);
+
+      const rightFields =
+        productComparableFields(right);
+
+      const fields =
+        new Set([
+          ...Object.keys(leftFields),
+          ...Object.keys(rightFields),
+        ]);
+
+      const conflicts:
+        Record<string, string[]> = {};
+
+      for (const field of fields) {
+        const leftValue =
+          leftFields[field];
+
+        const rightValue =
+          rightFields[field];
+
+        if (
+          leftValue &&
+          rightValue &&
+          leftValue !== rightValue
+        ) {
+          conflicts[field] = [
+            leftValue,
+            rightValue,
+          ];
+        }
+      }
+
+      if (
+        Object.keys(conflicts)
+          .length === 0
+      ) {
+        continue;
+      }
+
+      conflictingPairs.push({
+        left: {
+          id: left.id,
+          url: left.url,
+          name: left.name,
+          scriptIndex:
+            left.scriptIndex,
+          path:
+            left.path,
+        },
+        right: {
+          id: right.id,
+          url: right.url,
+          name: right.name,
+          scriptIndex:
+            right.scriptIndex,
+          path:
+            right.path,
+        },
+        conflicts,
+      });
     }
   }
 
-  if (Object.keys(conflicts).length === 0) return [];
+  if (
+    conflictingPairs.length === 0
+  ) {
+    return [];
+  }
 
   return [
     {
-      code: "CONFLICTING_PRODUCT_SCHEMA",
-      severity: "HIGH",
+      code:
+        "CONFLICTING_PRODUCT_SCHEMA",
+      severity:
+        "HIGH",
       message:
-        "Multiple Product nodes expose conflicting product values.",
-      details: { conflicts },
+        "Multiple JSON-LD Product nodes identified as the same entity expose conflicting values.",
+      details: {
+        pairs:
+          conflictingPairs,
+      },
     },
   ];
 }
-
 function detectDuplicateSchemaNodes(
   nodes: JsonLdNode[],
 ): SeoAuditIssue[] {
