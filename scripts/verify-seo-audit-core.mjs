@@ -245,6 +245,109 @@ assert.equal(
   false,
   "Legitimate ProductGroup variants must not be treated as duplicate Product schema nodes.",
 );
+const equivalentProductSerializationHtml = `
+<!doctype html>
+<html>
+<head>
+  <title>Equivalent Product</title>
+  <meta
+    name="description"
+    content="Equivalent schema serialization test"
+  >
+  <link
+    rel="canonical"
+    href="https://example.com/products/equivalent-product"
+  >
+</head>
+<body>
+  <h1>Equivalent Product</h1>
+
+  <script
+    type="application/ld+json"
+    data-added-by="autoSchema"
+  >
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "@id": "https://example.com/products/equivalent-product#product",
+    "name": "Equivalent Product",
+    "url": "https://example.com/products/equivalent-product",
+    "sku": "EQ-619",
+    "offers": {
+      "@type": "Offer",
+      "price": "619",
+      "priceCurrency": "SEK",
+      "availability": "https://schema.org/InStock"
+    }
+  }
+  </script>
+
+  <script
+    type="application/ld+json"
+  >
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "@id": "/products/equivalent-product#product",
+    "name": "Equivalent Product",
+    "url": "https://example.com/products/equivalent-product",
+    "sku": "EQ-619",
+    "offers": {
+      "@type": "Offer",
+      "price": "619.00",
+      "priceCurrency": "sek",
+      "availability": "http://schema.org/InStock"
+    }
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": []
+  }
+  </script>
+</body>
+</html>
+`;
+
+const equivalentProductSerialization =
+  auditHtml({
+    requestedUrl:
+      "https://example.com/products/equivalent-product",
+
+    finalUrl:
+      "https://example.com/products/equivalent-product",
+
+    statusCode:
+      200,
+
+    html:
+      equivalentProductSerializationHtml,
+
+    expectedPageType:
+      "PRODUCT",
+  });
+
+const equivalentProductSerializationCodes =
+  new Set(
+    equivalentProductSerialization
+      .issues
+      .map(
+        (issue) =>
+          issue.code,
+      ),
+  );
+
+assert.equal(
+  equivalentProductSerializationCodes.has(
+    "CONFLICTING_PRODUCT_SCHEMA",
+  ),
+  false,
+  "Equivalent numeric price formatting and http/https Schema.org availability terms must not be treated as conflicting Product schema.",
+);
+
 const brokenHtml = `
 <!doctype html>
 <html>
