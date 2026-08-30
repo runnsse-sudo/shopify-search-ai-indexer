@@ -245,6 +245,128 @@ function splitDirectives(values: string[]): string[] {
     .filter(Boolean);
 }
 
+function normalizeDecimalComparable(
+  value: string,
+) {
+  const trimmed = value.trim();
+
+  const match =
+    /^([+-]?)(\d*)(?:\.(\d*))?$/
+      .exec(trimmed);
+
+  if (
+    !match ||
+    (!match[2] && !match[3])
+  ) {
+    return trimmed;
+  }
+
+  const negative =
+    match[1] === "-";
+
+  const integer =
+    (match[2] || "0")
+      .replace(
+        /^0+(?=\d)/,
+        "",
+      );
+
+  const fraction =
+    (match[3] || "")
+      .replace(
+        /0+$/,
+        "",
+      );
+
+  const magnitude =
+    fraction
+      ? `${integer}.${fraction}`
+      : integer;
+
+  if (
+    /^0(?:\.0*)?$/.test(
+      magnitude,
+    )
+  ) {
+    return "0";
+  }
+
+  return negative
+    ? `-${magnitude}`
+    : magnitude;
+}
+
+function normalizeSchemaOrgComparable(
+  value: string,
+) {
+  const trimmed = value.trim();
+
+  try {
+    const url =
+      new URL(trimmed);
+
+    const hostname =
+      url.hostname
+        .toLowerCase()
+        .replace(
+          /^www\./,
+          "",
+        );
+
+    if (
+      hostname !== "schema.org" ||
+      (
+        url.protocol !== "http:" &&
+        url.protocol !== "https:"
+      )
+    ) {
+      return trimmed;
+    }
+
+    const pathname =
+      url.pathname.replace(
+        /\/+$/,
+        "",
+      );
+
+    return (
+      `https://schema.org${pathname}` +
+      url.search +
+      url.hash
+    );
+  } catch {
+    return trimmed;
+  }
+}
+
+function normalizeOfferComparable(
+  field:
+    | "price"
+    | "priceCurrency"
+    | "availability",
+  value: string,
+) {
+  if (field === "price") {
+    return normalizeDecimalComparable(
+      value,
+    );
+  }
+
+  if (field === "availability") {
+    return normalizeSchemaOrgComparable(
+      value,
+    );
+  }
+
+  if (field === "priceCurrency") {
+    return value
+      .trim()
+      .toUpperCase();
+  }
+
+  return value;
+}
+
 function productComparableFields(node: JsonLdNode) {
   const result: Record<string, string> = {};
 
@@ -273,7 +395,11 @@ function productComparableFields(node: JsonLdNode) {
           : asString(rawValue);
 
       if (value) {
-        result[`offers.${field}`] = value;
+        result[`offers.${field}`] =
+          normalizeOfferComparable(
+            field,
+            value,
+          );
       }
     }
   }
