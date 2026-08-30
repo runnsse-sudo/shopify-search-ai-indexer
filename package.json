@@ -31,7 +31,9 @@
     "build:provider-materialization-multishop-worker": "esbuild workers/provider-materialization-multishop-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build-workers/provider-materialization-multishop-worker.mjs",
     "build:indexnow-multishop-worker": "esbuild workers/indexnow-multishop-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build-workers/indexnow-multishop-worker.mjs",
     "provider-materialization-multishop-worker": "npm run setup && node ./build-workers/provider-materialization-multishop-worker.mjs",
-    "indexnow-multishop-worker": "npm run setup && node ./build-workers/indexnow-multishop-worker.mjs"
+    "indexnow-multishop-worker": "npm run setup && node ./build-workers/indexnow-multishop-worker.mjs",
+    "build:seo-audit-core": "esbuild app/services/seo-audit/html-audit.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/seo-html-audit.mjs",
+    "verify:seo-audit-core": "npm run build:seo-audit-core && node scripts/verify-seo-audit-core.mjs"
   },
   "type": "module",
   "engines": {
@@ -46,6 +48,7 @@
     "@shopify/app-bridge-react": "^4.2.4",
     "@shopify/shopify-app-react-router": "^1.2.1",
     "@shopify/shopify-app-session-storage-prisma": "^9.0.0",
+    "cheerio": "1.1.2",
     "isbot": "^5.1.31",
     "prisma": "^6.16.3",
     "react": "^18.3.1",
