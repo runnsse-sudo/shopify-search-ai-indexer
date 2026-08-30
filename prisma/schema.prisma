@@ -93,24 +93,26 @@ model Shop {
   scanRuns           ScanRun[]
   webhookReceipts    WebhookReceipt[]
   providerConfig     ShopProviderConfig?
+  seoAuditRuns       SeoAuditRun[]
+  seoAuditPages      SeoAuditPage[]
 }
 
 model ShopProviderConfig {
-  id                              String   @id @default(cuid())
-  shopId                          String   @unique
-  indexNowEnabled                 Boolean  @default(false)
-  indexNowAllowedHost             String?
-  indexNowCredentialCiphertext    String?
-  indexNowCredentialIv            String?
-  indexNowCredentialTag           String?
-  indexNowOwnershipVerifiedAt     DateTime?
-  indexNowOwnershipLastCheckedAt  DateTime?
-  indexNowOwnershipError          String?
-  materializationLastRunAt        DateTime?
-  indexNowLastRunAt               DateTime?
-  createdAt                       DateTime @default(now())
-  updatedAt                       DateTime @updatedAt
-  shop                            Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  id                             String    @id @default(cuid())
+  shopId                         String    @unique
+  indexNowEnabled                Boolean   @default(false)
+  indexNowAllowedHost            String?
+  indexNowCredentialCiphertext   String?
+  indexNowCredentialIv           String?
+  indexNowCredentialTag          String?
+  indexNowOwnershipVerifiedAt    DateTime?
+  indexNowOwnershipLastCheckedAt DateTime?
+  indexNowOwnershipError         String?
+  materializationLastRunAt       DateTime?
+  indexNowLastRunAt              DateTime?
+  createdAt                      DateTime  @default(now())
+  updatedAt                      DateTime  @updatedAt
+  shop                           Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
   @@index([indexNowEnabled, indexNowOwnershipVerifiedAt])
   @@index([indexNowEnabled, materializationLastRunAt])
@@ -165,6 +167,7 @@ model ProductIndexState {
   shop                Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
   events              IndexEvent[]
   queueItems          IndexQueueItem[]
+  seoAuditPages       SeoAuditPage[]
 
   @@unique([shopId, shopifyProductGid])
   @@index([shopId, indexabilityState])
@@ -260,4 +263,83 @@ model IndexAttempt {
 
   @@unique([queueItemId, attemptNumber])
   @@index([shopId, provider, startedAt])
+}
+
+enum SeoAuditRunStatus {
+  PENDING
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model SeoAuditRun {
+  id               String            @id @default(cuid())
+  shopId           String
+  status           SeoAuditRunStatus @default(PENDING)
+  activeKey        String?           @unique
+  cursorProductGid String?
+  pagesProcessed   Int               @default(0)
+  pagesSucceeded   Int               @default(0)
+  pagesFailed      Int               @default(0)
+  criticalCount    Int               @default(0)
+  highCount        Int               @default(0)
+  mediumCount      Int               @default(0)
+  lowCount         Int               @default(0)
+  infoCount        Int               @default(0)
+  startedAt        DateTime?
+  lastProgressAt   DateTime?
+  completedAt      DateTime?
+  errorMessage     String?
+  batchToken       String?           @unique
+  batchClaimedAt   DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  shop             Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  pages            SeoAuditPage[]
+
+  @@index([shopId, createdAt])
+  @@index([status, lastProgressAt])
+}
+
+model SeoAuditPage {
+  id                  String             @id @default(cuid())
+  runId               String
+  shopId              String
+  productIndexStateId String?
+  shopifyProductGid   String
+  requestedUrl        String
+  finalUrl            String?
+  statusCode          Int?
+  redirectChain       Json?
+  title               String?
+  metaDescription     String?
+  h1Count             Int?
+  canonicalUrl        String?
+  canonicalLinks      Json?
+  robotsMeta          Json?
+  xRobotsTag          String?
+  noindex             Boolean?
+  jsonLdScriptCount   Int                @default(0)
+  jsonLdTypeCounts    Json?
+  jsonLdNodes         Json?
+  issues              Json?
+  criticalCount       Int                @default(0)
+  highCount           Int                @default(0)
+  mediumCount         Int                @default(0)
+  lowCount            Int                @default(0)
+  infoCount           Int                @default(0)
+  error               String?
+  auditedAt           DateTime           @default(now())
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  run                 SeoAuditRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  shop                Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  productIndexState   ProductIndexState? @relation(fields: [productIndexStateId], references: [id], onDelete: SetNull)
+
+  @@unique([runId, shopifyProductGid])
+  @@index([shopId, auditedAt])
+  @@index([runId, statusCode])
+  @@index([runId, criticalCount, highCount])
 }
