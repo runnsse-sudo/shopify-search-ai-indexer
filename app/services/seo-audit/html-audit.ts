@@ -288,7 +288,6 @@ const PRODUCT_IDENTITY_FIELDS = [
   "gtin12",
   "gtin13",
   "gtin14",
-  "mpn",
 ] as const;
 
 function normalizeIdentityValue(
@@ -484,6 +483,55 @@ function detectProductConflicts(
     },
   ];
 }
+function duplicateSchemaIdentity(
+  node: JsonLdNode,
+  singletonType: string,
+): string | null {
+  if (singletonType === "Product") {
+    for (
+      const field
+      of PRODUCT_IDENTITY_FIELDS
+    ) {
+      const value =
+        asString(node.raw[field]);
+
+      if (value) {
+        return [
+          "Product",
+          `${field}:${normalizeIdentityValue(value)}`,
+        ]
+          .join("|")
+          .toLowerCase();
+      }
+    }
+
+    if (node.id) {
+      return [
+        "Product",
+        `id:${normalizeIdentityValue(node.id)}`,
+      ]
+        .join("|")
+        .toLowerCase();
+    }
+  }
+
+  const identity = [
+    singletonType,
+    node.url ?? "",
+    node.name ?? "",
+  ]
+    .join("|")
+    .toLowerCase();
+
+  if (
+    identity ===
+    `${singletonType.toLowerCase()}||`
+  ) {
+    return null;
+  }
+
+  return identity;
+}
 function detectDuplicateSchemaNodes(
   nodes: JsonLdNode[],
 ): SeoAuditIssue[] {
@@ -530,15 +578,13 @@ function detectDuplicateSchemaNodes(
 
     if (!singletonType) continue;
 
-    const identity = [
-      singletonType,
-      node.url ?? "",
-      node.name ?? "",
-    ]
-      .join("|")
-      .toLowerCase();
+    const identity =
+      duplicateSchemaIdentity(
+        node,
+        singletonType,
+      );
 
-    if (identity === `${singletonType.toLowerCase()}||`) {
+    if (!identity) {
       continue;
     }
 

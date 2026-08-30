@@ -158,6 +158,7 @@ const productGroupHtml = `
         "name": "Grouped Product",
         "url": "https://example.com/products/grouped-product",
         "sku": "GROUP-RED",
+        "mpn": "GROUP-MODEL",
         "offers": {
           "@type": "Offer",
           "price": "199.00",
@@ -170,6 +171,7 @@ const productGroupHtml = `
         "name": "Grouped Product",
         "url": "https://example.com/products/grouped-product",
         "sku": "GROUP-BLUE",
+        "mpn": "GROUP-MODEL",
         "offers": {
           "@type": "Offer",
           "price": "249.00",
@@ -234,6 +236,14 @@ assert.equal(
   ),
   false,
   "Legitimate ProductGroup variants must not be treated as conflicting duplicate Product schema.",
+);
+
+assert.equal(
+  productGroupCodes.has(
+    "POTENTIAL_DUPLICATE_SCHEMA_NODE",
+  ),
+  false,
+  "Legitimate ProductGroup variants must not be treated as duplicate Product schema nodes.",
 );
 const brokenHtml = `
 <!doctype html>
