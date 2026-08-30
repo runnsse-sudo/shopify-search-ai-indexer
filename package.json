@@ -33,7 +33,9 @@
     "provider-materialization-multishop-worker": "npm run setup && node ./build-workers/provider-materialization-multishop-worker.mjs",
     "indexnow-multishop-worker": "npm run setup && node ./build-workers/indexnow-multishop-worker.mjs",
     "build:seo-audit-core": "esbuild app/services/seo-audit/html-audit.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/seo-html-audit.mjs",
-    "verify:seo-audit-core": "npm run build:seo-audit-core && node scripts/verify-seo-audit-core.mjs"
+    "verify:seo-audit-core": "npm run build:seo-audit-core && node scripts/verify-seo-audit-core.mjs",
+    "build:seo-audit-worker": "esbuild workers/seo-audit-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build-workers/seo-audit-worker.mjs",
+    "seo-audit-worker": "npm run setup && node ./build-workers/seo-audit-worker.mjs"
   },
   "type": "module",
   "engines": {
