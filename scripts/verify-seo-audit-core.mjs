@@ -348,6 +348,236 @@ assert.equal(
   "Equivalent numeric price formatting and http/https Schema.org availability terms must not be treated as conflicting Product schema.",
 );
 
+
+const htmlEntityNameMismatchHtml = `
+<!doctype html>
+<html>
+<head>
+  <title>Ampersand Product</title>
+  <meta
+    name="description"
+    content="HTML entity Product name comparison test"
+  >
+  <link
+    rel="canonical"
+    href="https://example.com/products/ampersand-product"
+  >
+</head>
+<body>
+  <h1>Ampersand Product</h1>
+
+  <script
+    type="application/ld+json"
+    data-added-by="source-a"
+  >
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "@id": "https://example.com/products/ampersand-product#product-a",
+    "name": "Ampersand &amp; Product",
+    "url": "https://example.com/products/ampersand-product",
+    "sku": "AMP-SOURCE-A",
+    "gtin13": "1234567890123",
+    "offers": {
+      "@type": "Offer",
+      "price": "299.00",
+      "priceCurrency": "SEK",
+      "availability": "https://schema.org/InStock"
+    }
+  }
+  </script>
+
+  <script
+    type="application/ld+json"
+    data-added-by="source-b"
+  >
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "@id": "/products/ampersand-product#product-b",
+    "name": "Ampersand & Product",
+    "url": "https://example.com/products/ampersand-product",
+    "gtin13": "1234567890123",
+    "offers": {
+      "@type": "Offer",
+      "price": "299",
+      "priceCurrency": "sek",
+      "availability": "http://schema.org/InStock"
+    }
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": []
+  }
+  </script>
+</body>
+</html>
+`;
+
+const htmlEntityNameMismatch =
+  auditHtml({
+    requestedUrl:
+      "https://example.com/products/ampersand-product",
+
+    finalUrl:
+      "https://example.com/products/ampersand-product",
+
+    statusCode:
+      200,
+
+    html:
+      htmlEntityNameMismatchHtml,
+
+    expectedPageType:
+      "PRODUCT",
+  });
+
+const htmlEntityHighConflict =
+  htmlEntityNameMismatch
+    .issues
+    .find(
+      (issue) =>
+        issue.code ===
+        "CONFLICTING_PRODUCT_SCHEMA",
+    );
+
+const htmlEntityEncodingIssue =
+  htmlEntityNameMismatch
+    .issues
+    .find(
+      (issue) =>
+        issue.code ===
+        "PRODUCT_SCHEMA_NAME_ENCODING_MISMATCH",
+    );
+
+assert.equal(
+  htmlEntityHighConflict,
+  undefined,
+  "Names differing only by HTML entity encoding must not become a HIGH Product conflict.",
+);
+
+assert.ok(
+  htmlEntityEncodingIssue,
+  "Expected Product name encoding mismatch issue.",
+);
+
+assert.equal(
+  htmlEntityEncodingIssue.severity,
+  "MEDIUM",
+  "Entity-only Product name mismatch must be MEDIUM.",
+);
+
+
+/*
+ * Separate guard:
+ * a REAL name-only difference must still remain HIGH.
+ */
+
+const semanticNameConflictHtml = `
+<!doctype html>
+<html>
+<head>
+  <title>Semantic Name Conflict</title>
+  <meta
+    name="description"
+    content="Real Product name conflict test"
+  >
+  <link
+    rel="canonical"
+    href="https://example.com/products/name-conflict"
+  >
+</head>
+<body>
+  <h1>Semantic Name Conflict</h1>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "@id": "https://example.com/products/name-conflict#product-a",
+    "name": "Original Product Name",
+    "url": "https://example.com/products/name-conflict",
+    "sku": "NAME-SOURCE-A",
+    "gtin13": "1234567890124",
+    "offers": {
+      "@type": "Offer",
+      "price": "399.00",
+      "priceCurrency": "SEK",
+      "availability": "https://schema.org/InStock"
+    }
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "@id": "/products/name-conflict#product-b",
+    "name": "Actually Different Product Name",
+    "url": "https://example.com/products/name-conflict",
+    "gtin13": "1234567890124",
+    "offers": {
+      "@type": "Offer",
+      "price": "399",
+      "priceCurrency": "sek",
+      "availability": "http://schema.org/InStock"
+    }
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": []
+  }
+  </script>
+</body>
+</html>
+`;
+
+const semanticNameConflict =
+  auditHtml({
+    requestedUrl:
+      "https://example.com/products/name-conflict",
+
+    finalUrl:
+      "https://example.com/products/name-conflict",
+
+    statusCode:
+      200,
+
+    html:
+      semanticNameConflictHtml,
+
+    expectedPageType:
+      "PRODUCT",
+  });
+
+const semanticNameHigh =
+  semanticNameConflict
+    .issues
+    .find(
+      (issue) =>
+        issue.code ===
+        "CONFLICTING_PRODUCT_SCHEMA",
+    );
+
+assert.ok(
+  semanticNameHigh,
+  "A genuinely different Product name must remain a conflict.",
+);
+
+assert.equal(
+  semanticNameHigh.severity,
+  "HIGH",
+  "A genuine Product name conflict must remain HIGH.",
+);
+
 const brokenHtml = `
 <!doctype html>
 <html>
