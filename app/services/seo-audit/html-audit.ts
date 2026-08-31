@@ -339,6 +339,69 @@ function normalizeSchemaOrgComparable(
   }
 }
 
+
+function decodeHtmlEntityComparable(
+  value: string,
+) {
+  const namedEntities:
+    Record<string, string> = {
+      amp: "&",
+      lt: "<",
+      gt: ">",
+      quot: '"',
+      apos: "'",
+    };
+
+  return value.replace(
+    /&(?:(amp|lt|gt|quot|apos)|#([0-9]+)|#x([0-9a-f]+));/gi,
+    (
+      match: string,
+      named: string | undefined,
+      decimal: string | undefined,
+      hexadecimal: string | undefined,
+    ) => {
+      if (named) {
+        return (
+          namedEntities[
+            named.toLowerCase()
+          ] ?? match
+        );
+      }
+
+      const codePoint =
+        decimal
+          ? Number.parseInt(
+              decimal,
+              10,
+            )
+          : hexadecimal
+            ? Number.parseInt(
+                hexadecimal,
+                16,
+              )
+            : Number.NaN;
+
+      if (
+        !Number.isInteger(
+          codePoint,
+        ) ||
+        codePoint < 0 ||
+        codePoint > 0x10ffff ||
+        (
+          codePoint >= 0xd800 &&
+          codePoint <= 0xdfff
+        )
+      ) {
+        return match;
+      }
+
+      return String.fromCodePoint(
+        codePoint,
+      );
+    },
+  );
+}
+
 function normalizeOfferComparable(
   field:
     | "price"
@@ -592,6 +655,61 @@ function detectProductConflicts(
     conflictingPairs.length === 0
   ) {
     return [];
+  }
+
+
+  const encodingOnlyNameMismatch =
+    conflictingPairs.every(
+      (pair) => {
+        const fields =
+          Object.keys(
+            pair.conflicts,
+          );
+
+        if (
+          fields.length !== 1 ||
+          fields[0] !== "name"
+        ) {
+          return false;
+        }
+
+        const values =
+          pair.conflicts.name ?? [];
+
+        if (
+          values.length !== 2
+        ) {
+          return false;
+        }
+
+        return (
+          decodeHtmlEntityComparable(
+            values[0],
+          ) ===
+          decodeHtmlEntityComparable(
+            values[1],
+          )
+        );
+      },
+    );
+
+  if (
+    encodingOnlyNameMismatch
+  ) {
+    return [
+      {
+        code:
+          "PRODUCT_SCHEMA_NAME_ENCODING_MISMATCH",
+        severity:
+          "MEDIUM",
+        message:
+          "Multiple JSON-LD Product nodes expose names that differ only by HTML entity encoding.",
+        details: {
+          pairs:
+            conflictingPairs,
+        },
+      },
+    ];
   }
 
   return [
