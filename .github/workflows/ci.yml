@@ -47,6 +47,9 @@ jobs:
       - name: Verify SEO audit parser
         run: npm run verify:seo-audit-core
 
+      - name: Verify SEO storefront retry
+        run: npm run verify:seo-audit-storefront-fetch
+
       - name: Typecheck
         run: npm run typecheck
 
