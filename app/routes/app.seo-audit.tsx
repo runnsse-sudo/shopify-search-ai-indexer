@@ -456,6 +456,16 @@ export default function SeoAudit() {
         )
       : 0;
 
+  const copyRunId = () => {
+    if (!latestRun) {
+      return;
+    }
+
+    void navigator.clipboard?.writeText(
+      latestRun.id,
+    );
+  };
+
   return (
     <s-page heading="SEO Audit">
       <s-section heading="Read-only storefront audit">
@@ -637,6 +647,17 @@ export default function SeoAudit() {
               <s-list-item>
                 Status:{" "}
                 {latestRun.status}
+              </s-list-item>
+
+              <s-list-item>
+                Audit run ID:{" "}
+                {latestRun.id}{" "}
+                <button
+                  type="button"
+                  onClick={copyRunId}
+                >
+                  Copy
+                </button>
               </s-list-item>
 
               <s-list-item>
