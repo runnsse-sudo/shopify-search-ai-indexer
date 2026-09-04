@@ -47,6 +47,53 @@ function structuredDataTypes(
     );
 }
 
+type DisplayIssue = {
+  code: string;
+  severity: string;
+  message: string | null;
+};
+
+function displayIssues(
+  value: unknown,
+): DisplayIssue[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (
+      typeof item !== "object" ||
+      item === null ||
+      Array.isArray(item)
+    ) {
+      return [];
+    }
+
+    const issue = item as Record<
+      string,
+      unknown
+    >;
+
+    if (
+      typeof issue.code !== "string" ||
+      typeof issue.severity !== "string"
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        code: issue.code,
+        severity: issue.severity,
+        message:
+          typeof issue.message === "string"
+            ? issue.message
+            : null,
+      },
+    ];
+  });
+}
+
 export const loader = async ({
   request,
 }: LoaderFunctionArgs) => {
@@ -73,6 +120,8 @@ export const loader = async ({
       indexableProducts: 0,
       latestRun: null,
       recentPages: [],
+      issuePages: [],
+      issuePageCount: 0,
     };
   }
 
@@ -139,9 +188,42 @@ export const loader = async ({
     auditedAt: Date;
   }> = [];
 
+  let issuePages: Array<{
+    id: string;
+    requestedUrl: string;
+    finalUrl: string | null;
+    statusCode: number | null;
+    title: string | null;
+    criticalCount: number;
+    highCount: number;
+    mediumCount: number;
+    lowCount: number;
+    infoCount: number;
+    issues: DisplayIssue[];
+    error: string | null;
+    auditedAt: Date;
+  }> = [];
+
+  let issuePageCount = 0;
+
   if (latestRun) {
-    const pages =
-      await prisma.seoAuditPage.findMany({
+    const issuePageWhere = {
+      runId: latestRun.id,
+      OR: [
+        { criticalCount: { gt: 0 } },
+        { highCount: { gt: 0 } },
+        { mediumCount: { gt: 0 } },
+        { lowCount: { gt: 0 } },
+        { infoCount: { gt: 0 } },
+      ],
+    };
+
+    const [
+      pages,
+      pagesWithIssues,
+      totalIssuePages,
+    ] = await Promise.all([
+      prisma.seoAuditPage.findMany({
         where: {
           runId: latestRun.id,
         },
@@ -167,7 +249,35 @@ export const loader = async ({
           error: true,
           auditedAt: true,
         },
-      });
+      }),
+
+      prisma.seoAuditPage.findMany({
+        where: issuePageWhere,
+        orderBy: {
+          auditedAt: "desc",
+        },
+        take: 100,
+        select: {
+          id: true,
+          requestedUrl: true,
+          finalUrl: true,
+          statusCode: true,
+          title: true,
+          criticalCount: true,
+          highCount: true,
+          mediumCount: true,
+          lowCount: true,
+          infoCount: true,
+          issues: true,
+          error: true,
+          auditedAt: true,
+        },
+      }),
+
+      prisma.seoAuditPage.count({
+        where: issuePageWhere,
+      }),
+    ]);
 
     recentPages = pages.map(
       (page) => ({
@@ -206,6 +316,38 @@ export const loader = async ({
           page.auditedAt,
       }),
     );
+
+    issuePages = pagesWithIssues.map(
+      (page) => ({
+        id: page.id,
+        requestedUrl:
+          page.requestedUrl,
+        finalUrl:
+          page.finalUrl,
+        statusCode:
+          page.statusCode,
+        title:
+          page.title,
+        criticalCount:
+          page.criticalCount,
+        highCount:
+          page.highCount,
+        mediumCount:
+          page.mediumCount,
+        lowCount:
+          page.lowCount,
+        infoCount:
+          page.infoCount,
+        issues:
+          displayIssues(page.issues),
+        error:
+          page.error,
+        auditedAt:
+          page.auditedAt,
+      }),
+    );
+
+    issuePageCount = totalIssuePages;
   }
 
   return {
@@ -218,6 +360,8 @@ export const loader = async ({
     indexableProducts,
     latestRun,
     recentPages,
+    issuePages,
+    issuePageCount,
   };
 };
 
@@ -387,6 +531,8 @@ export default function SeoAudit() {
     indexableProducts,
     latestRun,
     recentPages,
+    issuePages,
+    issuePageCount,
   } = useLoaderData<
     typeof loader
   >();
@@ -777,6 +923,105 @@ export default function SeoAudit() {
             }
           />
         </s-stack>
+      </s-section>
+
+      <s-section heading="Products with SEO issues">
+        {issuePages.length === 0 ? (
+          <s-paragraph>
+            No SEO issues have been
+            recorded in the latest run.
+          </s-paragraph>
+        ) : (
+          <s-stack
+            direction="block"
+            gap="small-300"
+          >
+            <s-paragraph>
+              Showing{" "}
+              {issuePages.length.toLocaleString()}
+              {" of "}
+              {issuePageCount.toLocaleString()}
+              {" "}
+              audited product pages with
+              one or more SEO issues.
+            </s-paragraph>
+
+            {issuePages.map((page) => (
+              <s-box
+                key={page.id}
+                padding="base"
+                borderWidth="base"
+                borderRadius="base"
+              >
+                <s-stack
+                  direction="block"
+                  gap="small-200"
+                >
+                  <s-heading>
+                    {page.title ??
+                      "Untitled product"}
+                  </s-heading>
+
+                  <s-paragraph>
+                    {page.finalUrl ??
+                      page.requestedUrl}
+                  </s-paragraph>
+
+                  <s-unordered-list>
+                    <s-list-item>
+                      HTTP: {page.statusCode ??
+                        "No response"}
+                    </s-list-item>
+
+                    <s-list-item>
+                      Severity totals:{" "}
+                      Critical {page.criticalCount},
+                      {" "}High {page.highCount},
+                      {" "}Medium {page.mediumCount},
+                      {" "}Low {page.lowCount},
+                      {" "}Info {page.infoCount}
+                    </s-list-item>
+
+                    <s-list-item>
+                      Audited: {formatDate(
+                        page.auditedAt,
+                      )}
+                    </s-list-item>
+                  </s-unordered-list>
+
+                  {page.issues.length > 0 ? (
+                    <s-unordered-list>
+                      {page.issues.map(
+                        (issue, index) => (
+                          <s-list-item
+                            key={`${page.id}-${issue.code}-${String(index)}`}
+                          >
+                            {issue.severity}: {issue.code}
+                            {issue.message
+                              ? ` — ${issue.message}`
+                              : ""}
+                          </s-list-item>
+                        ),
+                      )}
+                    </s-unordered-list>
+                  ) : (
+                    <s-paragraph>
+                      Issue details could not
+                      be decoded; severity
+                      totals are shown above.
+                    </s-paragraph>
+                  )}
+
+                  {page.error ? (
+                    <s-paragraph>
+                      Audit error: {page.error}
+                    </s-paragraph>
+                  ) : null}
+                </s-stack>
+              </s-box>
+            ))}
+          </s-stack>
+        )}
       </s-section>
 
       <s-section heading="Recent audited products">
