@@ -253,9 +253,26 @@ export const loader = async ({
 
       prisma.seoAuditPage.findMany({
         where: issuePageWhere,
-        orderBy: {
-          auditedAt: "desc",
-        },
+        orderBy: [
+          {
+            criticalCount: "desc",
+          },
+          {
+            highCount: "desc",
+          },
+          {
+            mediumCount: "desc",
+          },
+          {
+            lowCount: "desc",
+          },
+          {
+            infoCount: "desc",
+          },
+          {
+            auditedAt: "desc",
+          },
+        ],
         take: 100,
         select: {
           id: true,
