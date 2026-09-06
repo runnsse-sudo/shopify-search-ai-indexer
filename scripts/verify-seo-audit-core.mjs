@@ -477,6 +477,139 @@ assert.equal(
  * a REAL name-only difference must still remain HIGH.
  */
 
+/*
+ * Regression guard:
+ * Double-encoded HTML entities must normalize to the same
+ * visible Product name and must not become a HIGH conflict.
+ *
+ * Real-world reproduction:
+ *   7&amp;quot;
+ * versus
+ *   7&quot;
+ */
+const doubleEncodedNameMismatchHtml = `
+<!doctype html>
+<html>
+<head>
+  <title>Double Encoded Product</title>
+  <meta
+    name="description"
+    content="Double encoded HTML entity Product name comparison test"
+  >
+  <link
+    rel="canonical"
+    href="https://example.com/products/double-encoded-product"
+  >
+</head>
+<body>
+  <h1>Double Encoded Product</h1>
+
+  <script
+    type="application/ld+json"
+    data-added-by="source-a"
+  >
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "@id": "https://example.com/products/double-encoded-product#product",
+    "name": "TMNT – 7&amp;quot; Actionfigur – Ultimate Leonardo (VHS)",
+    "url": "https://example.com/products/double-encoded-product",
+    "gtin": "634482543528",
+    "mpn": "BFI-634482543528-NECA54352",
+    "offers": {
+      "@type": "Offer",
+      "price": "609",
+      "priceCurrency": "SEK",
+      "availability": "https://schema.org/InStock"
+    }
+  }
+  </script>
+
+  <script
+    type="application/ld+json"
+    data-added-by="source-b"
+  >
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "@id": "/products/double-encoded-product#product",
+    "name": "TMNT – 7&quot; Actionfigur – Ultimate Leonardo (VHS)",
+    "url": "https://example.com/products/double-encoded-product",
+    "sku": "BFI-634482543528-NECA54352",
+    "gtin": "634482543528",
+    "offers": {
+      "@type": "Offer",
+      "price": "609.00",
+      "priceCurrency": "SEK",
+      "availability": "http://schema.org/InStock"
+    }
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": []
+  }
+  </script>
+</body>
+</html>
+`;
+
+const doubleEncodedNameMismatch =
+  auditHtml({
+    requestedUrl:
+      "https://example.com/products/double-encoded-product",
+
+    finalUrl:
+      "https://example.com/products/double-encoded-product",
+
+    statusCode:
+      200,
+
+    html:
+      doubleEncodedNameMismatchHtml,
+
+    expectedPageType:
+      "PRODUCT",
+  });
+
+const doubleEncodedHighConflict =
+  doubleEncodedNameMismatch
+    .issues
+    .find(
+      (issue) =>
+        issue.code ===
+        "CONFLICTING_PRODUCT_SCHEMA",
+    );
+
+const doubleEncodedEncodingIssue =
+  doubleEncodedNameMismatch
+    .issues
+    .find(
+      (issue) =>
+        issue.code ===
+        "PRODUCT_SCHEMA_NAME_ENCODING_MISMATCH",
+    );
+
+assert.equal(
+  doubleEncodedHighConflict,
+  undefined,
+  "Double-encoded HTML entities must not become a HIGH Product conflict.",
+);
+
+assert.ok(
+  doubleEncodedEncodingIssue,
+  "Expected double-encoded Product name mismatch to be classified as an encoding issue.",
+);
+
+assert.equal(
+  doubleEncodedEncodingIssue.severity,
+  "MEDIUM",
+  "Double-encoded Product name mismatch must be MEDIUM.",
+);
+
 const semanticNameConflictHtml = `
 <!doctype html>
 <html>
