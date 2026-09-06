@@ -340,7 +340,7 @@ function normalizeSchemaOrgComparable(
 }
 
 
-function decodeHtmlEntityComparable(
+function decodeHtmlEntityOnce(
   value: string,
 ) {
   const namedEntities:
@@ -400,6 +400,31 @@ function decodeHtmlEntityComparable(
       );
     },
   );
+}
+
+function decodeHtmlEntityComparable(
+  value: string,
+) {
+  let current = value;
+
+  for (
+    let pass = 0;
+    pass < 8;
+    pass += 1
+  ) {
+    const decoded =
+      decodeHtmlEntityOnce(
+        current,
+      );
+
+    if (decoded === current) {
+      return current;
+    }
+
+    current = decoded;
+  }
+
+  return current;
 }
 
 function normalizeOfferComparable(
