@@ -466,6 +466,12 @@ export async function runNextSeoAuditBatch(input: {
               node.scriptClass,
             sourceHint:
               node.sourceHint,
+            provenanceOwner:
+              node.provenanceOwner,
+            provenanceProvider:
+              node.provenanceProvider,
+            provenanceConfidence:
+              node.provenanceConfidence,
           }),
         );
 

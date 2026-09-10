@@ -711,6 +711,314 @@ assert.equal(
   "A genuine Product name conflict must remain HIGH.",
 );
 
+/*
+ * Structured-data provenance foundation.
+ *
+ * Missing source hints are intentionally classified as
+ * STOREFRONT rather than SHOPIFY until explicit ownership
+ * evidence exists.
+ */
+const provenanceHtml = `
+<!doctype html>
+<html>
+<head>
+  <title>Provenance Product</title>
+  <meta
+    name="description"
+    content="Structured data provenance verification"
+  >
+  <link
+    rel="canonical"
+    href="https://example.com/products/provenance-product"
+  >
+</head>
+<body>
+  <h1>Provenance Product</h1>
+
+  <script
+    type="application/ld+json"
+    data-added-by="autoSchema"
+  >
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "name": "autoSchema page"
+  }
+  </script>
+
+  <script
+    type="application/ld+json"
+    class="jdgm-server-jld"
+  >
+  {
+    "@context": "https://schema.org",
+    "@type": "AggregateRating",
+    "ratingValue": "5"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    "@id": "https://example.com/products/provenance-product#product",
+    "name": "Provenance Product",
+    "url": "https://example.com/products/provenance-product",
+    "sku": "PROVENANCE-1"
+  }
+  </script>
+
+  <script
+    type="application/ld+json"
+    data-provider="mystery-schema"
+  >
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "Mystery provider"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": []
+  }
+  </script>
+
+  <script
+    type="application/ld+json"
+    data-added-by="autoSchema"
+  >
+    { this is invalid json }
+  </script>
+</body>
+</html>
+`;
+
+const provenance =
+  auditHtml({
+    requestedUrl:
+      "https://example.com/products/provenance-product",
+
+    finalUrl:
+      "https://example.com/products/provenance-product",
+
+    statusCode:
+      200,
+
+    html:
+      provenanceHtml,
+
+    expectedPageType:
+      "PRODUCT",
+  });
+
+const autoSchemaNode =
+  provenance.jsonLd.nodes.find(
+    (node) =>
+      node.types.includes(
+        "WebPage",
+      ),
+  );
+
+assert.ok(
+  autoSchemaNode,
+  "Expected autoSchema WebPage node.",
+);
+
+assert.deepEqual(
+  {
+    owner:
+      autoSchemaNode.provenanceOwner,
+    provider:
+      autoSchemaNode.provenanceProvider,
+    confidence:
+      autoSchemaNode.provenanceConfidence,
+  },
+  {
+    owner:
+      "EXTERNAL_INTEGRATION",
+    provider:
+      "autoSchema",
+    confidence:
+      "HIGH",
+  },
+);
+
+const judgeMeNode =
+  provenance.jsonLd.nodes.find(
+    (node) =>
+      node.types.includes(
+        "AggregateRating",
+      ),
+  );
+
+assert.ok(
+  judgeMeNode,
+  "Expected Judge.me AggregateRating node.",
+);
+
+assert.deepEqual(
+  {
+    owner:
+      judgeMeNode.provenanceOwner,
+    provider:
+      judgeMeNode.provenanceProvider,
+    confidence:
+      judgeMeNode.provenanceConfidence,
+  },
+  {
+    owner:
+      "EXTERNAL_INTEGRATION",
+    provider:
+      "jdgm-server-jld",
+    confidence:
+      "HIGH",
+  },
+);
+
+const storefrontNode =
+  provenance.jsonLd.nodes.find(
+    (node) =>
+      node.types.includes(
+        "Product",
+      ),
+  );
+
+assert.ok(
+  storefrontNode,
+  "Expected unattributed storefront Product node.",
+);
+
+assert.deepEqual(
+  {
+    owner:
+      storefrontNode.provenanceOwner,
+    provider:
+      storefrontNode.provenanceProvider,
+    confidence:
+      storefrontNode.provenanceConfidence,
+  },
+  {
+    owner:
+      "STOREFRONT",
+    provider:
+      null,
+    confidence:
+      "MEDIUM",
+  },
+);
+
+const detectedNode =
+  provenance.jsonLd.nodes.find(
+    (node) =>
+      node.types.includes(
+        "WebSite",
+      ),
+  );
+
+assert.ok(
+  detectedNode,
+  "Expected explicitly hinted unknown schema node.",
+);
+
+assert.equal(
+  detectedNode.sourceHint,
+  "data-provider=mystery-schema",
+);
+
+assert.deepEqual(
+  {
+    owner:
+      detectedNode.provenanceOwner,
+    provider:
+      detectedNode.provenanceProvider,
+    confidence:
+      detectedNode.provenanceConfidence,
+  },
+  {
+    owner:
+      "DETECTED",
+    provider:
+      null,
+    confidence:
+      "LOW",
+  },
+);
+
+const autoSchemaParseFailure =
+  provenance.jsonLd
+    .parseFailures
+    .find(
+      (failure) =>
+        failure.sourceHint ===
+        "data-added-by=autoSchema",
+    );
+
+assert.ok(
+  autoSchemaParseFailure,
+  "Expected autoSchema parse failure provenance.",
+);
+
+assert.deepEqual(
+  {
+    owner:
+      autoSchemaParseFailure
+        .provenanceOwner,
+    provider:
+      autoSchemaParseFailure
+        .provenanceProvider,
+    confidence:
+      autoSchemaParseFailure
+        .provenanceConfidence,
+  },
+  {
+    owner:
+      "EXTERNAL_INTEGRATION",
+    provider:
+      "autoSchema",
+    confidence:
+      "HIGH",
+  },
+);
+
+const autoSchemaParseIssue =
+  provenance.issues.find(
+    (issue) =>
+      issue.code ===
+        "JSON_LD_PARSE_ERROR" &&
+      issue.details?.sourceHint ===
+        "data-added-by=autoSchema",
+  );
+
+assert.ok(
+  autoSchemaParseIssue,
+  "Expected provenance on JSON_LD_PARSE_ERROR.",
+);
+
+assert.equal(
+  autoSchemaParseIssue
+    .details
+    ?.provenanceOwner,
+  "EXTERNAL_INTEGRATION",
+);
+
+assert.equal(
+  autoSchemaParseIssue
+    .details
+    ?.provenanceProvider,
+  "autoSchema",
+);
+
+assert.equal(
+  autoSchemaParseIssue
+    .details
+    ?.provenanceConfidence,
+  "HIGH",
+);
+
 const brokenHtml = `
 <!doctype html>
 <html>

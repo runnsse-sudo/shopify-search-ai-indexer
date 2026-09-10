@@ -15,6 +15,27 @@ export type SeoPageType =
   | "HOME"
   | "UNKNOWN";
 
+export type SchemaProvenanceOwner =
+  | "SHOPIFY"
+  | "STOREFRONT"
+  | "DETECTED"
+  | "MANUAL_OVERRIDE"
+  | "EXTERNAL_INTEGRATION";
+
+export type SchemaProvenanceConfidence =
+  | "HIGH"
+  | "MEDIUM"
+  | "LOW";
+
+export type SchemaProvenance = {
+  provenanceOwner:
+    SchemaProvenanceOwner;
+  provenanceProvider:
+    string | null;
+  provenanceConfidence:
+    SchemaProvenanceConfidence;
+};
+
 export type SeoAuditIssue = {
   code: string;
   severity: SeoIssueSeverity;
@@ -32,12 +53,25 @@ export type JsonLdNode = {
   scriptId: string | null;
   scriptClass: string | null;
   sourceHint: string | null;
+  provenanceOwner:
+    SchemaProvenanceOwner;
+  provenanceProvider:
+    string | null;
+  provenanceConfidence:
+    SchemaProvenanceConfidence;
   raw: Record<string, unknown>;
 };
 
 export type JsonLdParseFailure = {
   scriptIndex: number;
   message: string;
+  sourceHint: string | null;
+  provenanceOwner:
+    SchemaProvenanceOwner;
+  provenanceProvider:
+    string | null;
+  provenanceConfidence:
+    SchemaProvenanceConfidence;
 };
 
 export type SeoHtmlAuditInput = {
@@ -179,6 +213,66 @@ function sourceHintForScript(
   return parts || null;
 }
 
+export function classifySchemaProvenance(
+  sourceHint: string | null,
+): SchemaProvenance {
+  const normalized =
+    sourceHint?.trim() ?? "";
+
+  if (!normalized) {
+    return {
+      provenanceOwner:
+        "STOREFRONT",
+      provenanceProvider:
+        null,
+      provenanceConfidence:
+        "MEDIUM",
+    };
+  }
+
+  const lower =
+    normalized.toLowerCase();
+
+  if (
+    lower.includes(
+      "data-added-by=autoschema",
+    )
+  ) {
+    return {
+      provenanceOwner:
+        "EXTERNAL_INTEGRATION",
+      provenanceProvider:
+        "autoSchema",
+      provenanceConfidence:
+        "HIGH",
+    };
+  }
+
+  if (
+    lower.includes(
+      "jdgm-server-jld",
+    )
+  ) {
+    return {
+      provenanceOwner:
+        "EXTERNAL_INTEGRATION",
+      provenanceProvider:
+        "jdgm-server-jld",
+      provenanceConfidence:
+        "HIGH",
+    };
+  }
+
+  return {
+    provenanceOwner:
+      "DETECTED",
+    provenanceProvider:
+      null,
+    provenanceConfidence:
+      "LOW",
+  };
+}
+
 function collectJsonLdNodes(input: {
   value: unknown;
   output: JsonLdNode[];
@@ -218,6 +312,9 @@ function collectJsonLdNodes(input: {
       scriptId: input.scriptId,
       scriptClass: input.scriptClass,
       sourceHint: input.sourceHint,
+      ...classifySchemaProvenance(
+        input.sourceHint,
+      ),
       raw: input.value,
     });
 
@@ -1055,6 +1152,11 @@ export function auditHtml(
       dataAttributes,
     );
 
+    const provenance =
+      classifySchemaProvenance(
+        sourceHint,
+      );
+
     try {
       const parsed: unknown = JSON.parse(rawText);
 
@@ -1077,6 +1179,8 @@ export function auditHtml(
       parseFailures.push({
         scriptIndex,
         message,
+        sourceHint,
+        ...provenance,
       });
 
       issues.push({
@@ -1088,6 +1192,7 @@ export function auditHtml(
           scriptIndex,
           message,
           sourceHint,
+          ...provenance,
         },
       });
     }
