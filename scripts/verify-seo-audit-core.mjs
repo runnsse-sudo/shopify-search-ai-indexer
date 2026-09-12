@@ -748,6 +748,18 @@ const provenanceHtml = `
 
   <script
     type="application/ld+json"
+    data-added-by="runn-schema-storefront"
+  >
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "@id": "https://example.com/products/provenance-product#runn-breadcrumb",
+    "itemListElement": []
+  }
+  </script>
+
+  <script
+    type="application/ld+json"
     class="jdgm-server-jld"
   >
   {
@@ -842,6 +854,45 @@ assert.deepEqual(
       "EXTERNAL_INTEGRATION",
     provider:
       "autoSchema",
+    confidence:
+      "HIGH",
+  },
+);
+
+const runnSchemaNode =
+  provenance.jsonLd.nodes.find(
+    (node) =>
+      node.sourceHint ===
+      "data-added-by=runn-schema-storefront",
+  );
+
+assert.ok(
+  runnSchemaNode,
+  "Expected Runn Schema Storefront node.",
+);
+
+assert.equal(
+  runnSchemaNode.types.includes(
+    "BreadcrumbList",
+  ),
+  true,
+  "Expected Runn Schema Storefront BreadcrumbList node.",
+);
+
+assert.deepEqual(
+  {
+    owner:
+      runnSchemaNode.provenanceOwner,
+    provider:
+      runnSchemaNode.provenanceProvider,
+    confidence:
+      runnSchemaNode.provenanceConfidence,
+  },
+  {
+    owner:
+      "EXTERNAL_INTEGRATION",
+    provider:
+      "runn-schema-storefront",
     confidence:
       "HIGH",
   },
