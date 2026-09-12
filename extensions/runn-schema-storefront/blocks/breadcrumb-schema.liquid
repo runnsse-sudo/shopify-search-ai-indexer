@@ -1,0 +1,40 @@
+{% if request.page_type == 'product' and product != blank %}
+  {% assign runn_breadcrumb_id = canonical_url | append: '#breadcrumb' %}
+  {% assign runn_home_url = shop.url | append: routes.root_url %}
+
+  <script
+    type="application/ld+json"
+    data-added-by="runn-schema-storefront"
+  >
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "@id": {{ runn_breadcrumb_id | json }},
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": {{ shop.name | json }},
+          "item": {{ runn_home_url | json }}
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": {{ product.title | json }},
+          "item": {{ canonical_url | json }}
+        }
+      ]
+    }
+  </script>
+{% endif %}
+
+{% schema %}
+{
+  "name": "Breadcrumb schema",
+  "target": "body",
+  "enabled_on": {
+    "templates": ["product"]
+  },
+  "settings": []
+}
+{% endschema %}

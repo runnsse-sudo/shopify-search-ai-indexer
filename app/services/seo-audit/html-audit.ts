@@ -250,6 +250,21 @@ export function classifySchemaProvenance(
 
   if (
     lower.includes(
+      "data-added-by=runn-schema-storefront",
+    )
+  ) {
+    return {
+      provenanceOwner:
+        "EXTERNAL_INTEGRATION",
+      provenanceProvider:
+        "runn-schema-storefront",
+      provenanceConfidence:
+        "HIGH",
+    };
+  }
+
+  if (
+    lower.includes(
       "jdgm-server-jld",
     )
   ) {
