@@ -1,0 +1,72 @@
+{% assign runn_policy_path = request.path | downcase %}
+{% assign runn_is_shipping_policy = false %}
+{% assign runn_is_return_policy = false %}
+
+{% if runn_policy_path contains '/pages/leveransinfo' %}
+  {% assign runn_is_shipping_policy = true %}
+{% endif %}
+
+{% if runn_policy_path contains '/policies/refund-policy' %}
+  {% assign runn_is_return_policy = true %}
+{% endif %}
+
+{% if runn_is_shipping_policy or runn_is_return_policy %}
+  {% assign runn_store_id = shop.url | append: '/#online-store' %}
+  {% assign runn_shipping_id = shop.url | append: '/#shipping-standard-se' %}
+  {% assign runn_return_policy_id = shop.url | append: '/#return-policy-se' %}
+
+  <script
+    type="application/ld+json"
+    data-added-by="runn-schema-storefront"
+  >
+    {
+      "@context": "https://schema.org",
+      "@type": "OnlineStore",
+      "@id": {{ runn_store_id | json }},
+      "name": {{ shop.name | json }},
+      "url": {{ shop.url | json }},
+      {% if runn_is_shipping_policy %}
+      "hasShippingService": {
+        "@type": "ShippingService",
+        "@id": {{ runn_shipping_id | json }},
+        "name": "Standardfrakt Sverige",
+        "description": "Ordinarie frakt inom Sverige kostar normalt 49 kr. Fraktalternativ kan variera beroende på försändelse, adress, storlek och vikt.",
+        "fulfillmentType": "https://schema.org/FulfillmentTypeDelivery",
+        "shippingConditions": {
+          "@type": "ShippingConditions",
+          "shippingDestination": {
+            "@type": "DefinedRegion",
+            "addressCountry": "SE"
+          },
+          "shippingRate": {
+            "@type": "MonetaryAmount",
+            "value": 49,
+            "currency": "SEK"
+          }
+        }
+      }
+      {% else %}
+      "hasMerchantReturnPolicy": {
+        "@type": "MerchantReturnPolicy",
+        "@id": {{ runn_return_policy_id | json }},
+        "applicableCountry": "SE",
+        "returnPolicyCountry": "SE",
+        "returnPolicyCategory": "https://schema.org/MerchantReturnFiniteReturnWindow",
+        "merchantReturnDays": 14,
+        "returnMethod": "https://schema.org/ReturnByMail",
+        "returnFees": "https://schema.org/ReturnFeesCustomerResponsibility",
+        "refundType": "https://schema.org/FullRefund",
+        "merchantReturnLink": {{ canonical_url | json }}
+      }
+      {% endif %}
+    }
+  </script>
+{% endif %}
+
+{% schema %}
+{
+  "name": "Merchant policy schema",
+  "target": "body",
+  "settings": []
+}
+{% endschema %}
