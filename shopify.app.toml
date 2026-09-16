@@ -1,13 +1,9 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "4138315f1af57c36a48d8f8d79ba8d3c"
-application_url = "https://example.com"
+client_id = "f252cb82e30d53a0fd155980249ebc29"
+application_url = "https://runn-search-ai-indexer-1029558196901.europe-north2.run.app"
 embedded = true
 name = "Runn Search AI Indexer"
-
-[access_scopes]
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_products"
 
 [webhooks]
 api_version = "2026-10"
@@ -32,9 +28,14 @@ api_version = "2026-10"
   uri = "/webhooks/products/delete"
   topics = [ "products/delete" ]
 
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_products"
+
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [
+  "https://runn-search-ai-indexer-1029558196901.europe-north2.run.app/auth/callback"
+]
 
 [build]
-include_config_on_deploy = true
-automatically_update_urls_on_dev = true
+automatically_update_urls_on_dev = false
