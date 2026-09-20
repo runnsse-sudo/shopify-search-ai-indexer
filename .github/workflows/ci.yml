@@ -53,6 +53,9 @@ jobs:
       - name: Verify schema storefront extension
         run: npm run verify:schema-storefront-extension
 
+      - name: Verify storefront settings
+        run: npm run verify:storefront-settings
+
       - name: Typecheck
         run: npm run typecheck
 
