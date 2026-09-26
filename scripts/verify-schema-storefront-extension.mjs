@@ -68,6 +68,7 @@ const requiredPolicyText = [
   "{% elsif runn_has_config_metafield == false %}",
 
   "/pages/leveransinfo",
+  "/policies/shipping-policy",
   "/policies/refund-policy",
   "runn_shipping_page_candidate",
   "runn_return_page_candidate",
@@ -193,7 +194,7 @@ forbidText(
   "merchant-policy",
 );
 
-// The block still emits only on the two existing policy page families.
+// The block emits only on the supported policy page families.
 requireText(
   policy,
   "runn_policy_path contains '/pages/leveransinfo'",
@@ -202,7 +203,19 @@ requireText(
 
 requireText(
   policy,
+  "runn_policy_path contains '/policies/shipping-policy'",
+  "merchant-policy",
+);
+
+requireText(
+  policy,
   "runn_policy_path contains '/policies/refund-policy'",
+  "merchant-policy",
+);
+
+forbidText(
+  policy,
+  "/policies/terms-of-service",
   "merchant-policy",
 );
 
@@ -221,5 +234,6 @@ console.log("Legacy fallback: metafield-absent only");
 console.log("Invalid/unsupported config: fail-closed");
 console.log("Product writer: absent");
 console.log("Offer writer: absent");
-console.log("Policy page routing: unchanged");
+console.log("Policy page routing: legacy shipping + standard shipping + refund");
+console.log("Terms of service routing: absent");
 console.log("Delivery timing mapping: intentionally deferred");
