@@ -19,7 +19,7 @@
 {% assign runn_shipping_page_candidate = false %}
 {% assign runn_return_page_candidate = false %}
 
-{% if runn_policy_path contains '/pages/leveransinfo' %}
+{% if runn_policy_path contains '/pages/leveransinfo' or runn_policy_path contains '/policies/shipping-policy' %}
   {% assign runn_shipping_page_candidate = true %}
 {% endif %}
 
