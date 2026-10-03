@@ -50,6 +50,9 @@ jobs:
       - name: Verify SEO storefront retry
         run: npm run verify:seo-audit-storefront-fetch
 
+      - name: Verify sitemap audit
+        run: npm run verify:sitemap-audit
+
       - name: Verify schema storefront extension
         run: npm run verify:schema-storefront-extension
 
