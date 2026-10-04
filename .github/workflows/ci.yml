@@ -53,6 +53,9 @@ jobs:
       - name: Verify sitemap audit
         run: npm run verify:sitemap-audit
 
+      - name: Verify redirect audit
+        run: npm run verify:redirect-audit
+
       - name: Verify schema storefront extension
         run: npm run verify:schema-storefront-extension
 
