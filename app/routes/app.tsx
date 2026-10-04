@@ -21,6 +21,7 @@ export default function App() {
         <s-link href="/app">Home</s-link>
         <s-link href="/app/provider-settings">IndexNow provider</s-link>
         <s-link href="/app/sitemap-indexing">Sitemap & indexing</s-link>
+        <s-link href="/app/redirect-audit">404 & redirects</s-link>
         <s-link href="/app/seo-audit">SEO Audit</s-link>
         <s-link href="/app/storefront-settings">Storefront settings</s-link>
         <s-link href="/app/additional">Additional page</s-link>

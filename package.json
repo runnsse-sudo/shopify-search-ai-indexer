@@ -38,6 +38,8 @@
     "verify:seo-audit-storefront-fetch": "npm run build:seo-audit-storefront-fetch && node scripts/verify-seo-audit-storefront-fetch.mjs",
     "build:sitemap-audit": "esbuild app/services/sitemap/sitemap-audit.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/sitemap-audit.mjs && esbuild app/services/sitemap/sitemap-audit.server.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/sitemap-audit-server.mjs",
     "verify:sitemap-audit": "npm run build:sitemap-audit && node scripts/verify-sitemap-audit.mjs",
+    "build:redirect-audit": "esbuild app/services/redirect-audit/redirect-audit.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/redirect-audit.mjs && esbuild app/services/redirect-audit/redirect-audit.server.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/redirect-audit-server.mjs",
+    "verify:redirect-audit": "npm run build:redirect-audit && node scripts/verify-redirect-audit.mjs",
     "verify:schema-storefront-extension": "node scripts/verify-schema-storefront-extension.mjs",
     "build:storefront-settings": "esbuild app/services/storefront-settings.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/storefront-settings.mjs && esbuild app/services/storefront-settings.server.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/storefront-settings-server.mjs",
     "verify:storefront-settings": "npm run build:storefront-settings && node scripts/verify-storefront-settings.mjs",
