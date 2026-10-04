@@ -160,6 +160,20 @@ assert.equal(
   "ARTICLE",
 );
 
+assert.equal(
+  classifySitemapUrl(
+    "https://example.com/seo/products/widget",
+  ),
+  "OTHER",
+);
+
+assert.equal(
+  classifySitemapUrl(
+    "https://example.com/abc/collections/widget",
+  ),
+  "OTHER",
+);
+
 console.log(
   "SITEMAP_AUDIT_LOCALE_CLASSIFICATION_PASS",
 );

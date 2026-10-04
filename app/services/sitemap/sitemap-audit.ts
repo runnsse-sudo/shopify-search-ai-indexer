@@ -181,7 +181,7 @@ export function classifySitemapUrl(
       .filter(Boolean);
 
   const localePrefix =
-    /^[a-z]{2,3}(?:-[a-z]{2})?$/i;
+    /^[a-z]{2}(?:-[a-z]{2})?$/i;
 
   const segments =
     rawSegments.length >= 2 &&
