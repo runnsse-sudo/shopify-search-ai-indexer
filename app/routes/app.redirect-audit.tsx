@@ -362,6 +362,11 @@ export default function RedirectAudit() {
               </s-list-item>
 
               <s-list-item>
+                Internal links unverified:{" "}
+                {result.internalLinksUnverified.toLocaleString()}
+              </s-list-item>
+
+              <s-list-item>
                 Client errors:{" "}
                 {result.clientErrorCount.toLocaleString()}
               </s-list-item>

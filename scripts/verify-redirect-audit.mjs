@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   extractInternalLinks,
   normalizeInternalUrl,
+  normalizeSitemapDocumentUrl,
   suggestRedirect,
 } from "../build-tests/redirect-audit.mjs";
 
@@ -17,6 +18,24 @@ assert.equal(
     "example.com",
   ),
   "https://example.com/products/widget",
+);
+
+assert.equal(
+  normalizeInternalUrl(
+    "https://example.com/products/widget?variant=123#reviews",
+    "https://example.com/pages/home",
+    "example.com",
+  ),
+  "https://example.com/products/widget",
+);
+
+assert.equal(
+  normalizeSitemapDocumentUrl(
+    "https://example.com/sitemap_products_1.xml?from=100&to=200#fragment",
+    "https://example.com/sitemap.xml",
+    "example.com",
+  ),
+  "https://example.com/sitemap_products_1.xml?from=100&to=200",
 );
 
 assert.equal(
@@ -100,13 +119,17 @@ assert.equal(
 );
 
 console.log(
+  "REDIRECT_AUDIT_SITEMAP_QUERY_PASS",
+);
+
+console.log(
   "REDIRECT_AUDIT_CORE_PASS",
 );
 
 const rootXml = `<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <sitemap>
-    <loc>https://example.com/sitemap_content_1.xml</loc>
+    <loc>https://example.com/sitemap_content_1.xml?from=1&amp;to=3</loc>
   </sitemap>
 </sitemapindex>`;
 
@@ -126,11 +149,17 @@ const contentXml = `<?xml version="1.0" encoding="UTF-8"?>
 const fetchDocument =
   async ({
     url,
+    preserveSearch,
   }) => {
     if (
       url ===
       "https://example.com/sitemap.xml"
     ) {
+      assert.equal(
+        preserveSearch,
+        true,
+      );
+
       return {
         requestedUrl: url,
         finalUrl: url,
@@ -146,8 +175,13 @@ const fetchDocument =
 
     if (
       url ===
-      "https://example.com/sitemap_content_1.xml"
+      "https://example.com/sitemap_content_1.xml?from=1&to=3"
     ) {
+      assert.equal(
+        preserveSearch,
+        true,
+      );
+
       return {
         requestedUrl: url,
         finalUrl: url,
@@ -176,6 +210,7 @@ const fetchDocument =
 <a href="/old-widget">Redirect</a>
 <a href="/loop-a">Loop</a>
 <a href="/gone">Gone</a>
+<a href="/too-large">Too large</a>
 <a href="/collections/good">Good</a>
 <a href="https://outside.example/nope">External</a>
 </body>
@@ -303,6 +338,24 @@ const fetchDocument =
       };
     }
 
+    if (
+      url ===
+      "https://example.com/too-large"
+    ) {
+      return {
+        requestedUrl: url,
+        finalUrl: url,
+        statusCode: 200,
+        html: "",
+        redirectChain: [],
+        loopDetected: false,
+        contentType:
+          "text/html",
+        error:
+          "BODY_TOO_LARGE",
+      };
+    }
+
     throw new Error(
       `UNEXPECTED_FETCH:${url}`,
     );
@@ -341,12 +394,12 @@ assert.equal(
 
 assert.equal(
   result.internalLinksDiscovered,
-  5,
+  6,
 );
 
 assert.equal(
   result.internalLinksChecked,
-  5,
+  6,
 );
 
 assert.equal(
@@ -436,6 +489,23 @@ assert.equal(
 );
 
 assert.equal(
+  result.internalLinksUnverified,
+  1,
+);
+
+const tooLargeBroken =
+  result.brokenInternalLinks.find(
+    (item) =>
+      item.url ===
+      "https://example.com/too-large",
+  );
+
+assert.equal(
+  tooLargeBroken,
+  undefined,
+);
+
+assert.equal(
   result.suggestionCounts.MEDIUM,
   1,
 );
@@ -458,6 +528,10 @@ console.log(
 
 console.log(
   "REDIRECT_AUDIT_SUGGESTION_CONFIDENCE_PASS",
+);
+
+console.log(
+  "REDIRECT_AUDIT_UNVERIFIED_LINK_PASS",
 );
 
 console.log(

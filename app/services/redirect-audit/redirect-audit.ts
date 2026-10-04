@@ -27,10 +27,11 @@ function normalizeHost(
     .replace(/\.$/, "");
 }
 
-export function normalizeInternalUrl(
+function normalizeSameHostUrl(
   raw: string,
   baseUrl: string,
   allowedHost: string,
+  stripSearch: boolean,
 ): string | null {
   try {
     const parsed =
@@ -64,7 +65,10 @@ export function normalizeInternalUrl(
     }
 
     parsed.hash = "";
-    parsed.search = "";
+
+    if (stripSearch) {
+      parsed.search = "";
+    }
 
     return normalizeComparableUrl(
       parsed.toString(),
@@ -72,6 +76,32 @@ export function normalizeInternalUrl(
   } catch {
     return null;
   }
+}
+
+export function normalizeInternalUrl(
+  raw: string,
+  baseUrl: string,
+  allowedHost: string,
+): string | null {
+  return normalizeSameHostUrl(
+    raw,
+    baseUrl,
+    allowedHost,
+    true,
+  );
+}
+
+export function normalizeSitemapDocumentUrl(
+  raw: string,
+  baseUrl: string,
+  allowedHost: string,
+): string | null {
+  return normalizeSameHostUrl(
+    raw,
+    baseUrl,
+    allowedHost,
+    false,
+  );
 }
 
 export function extractInternalLinks(

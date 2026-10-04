@@ -6,6 +6,7 @@ import {
 import {
   extractInternalLinks,
   normalizeInternalUrl,
+  normalizeSitemapDocumentUrl,
   suggestRedirect,
   type RedirectConfidence,
   type RedirectSuggestion,
@@ -14,6 +15,7 @@ import {
 export type RedirectAuditFetchInput = {
   url: string;
   allowedHost: string;
+  preserveSearch?: boolean;
 };
 
 export type RedirectAuditFetchResult = {
@@ -67,6 +69,7 @@ export type RedirectAuditResult = {
 
   internalLinksDiscovered: number;
   internalLinksChecked: number;
+  internalLinksUnverified: number;
 
   notFoundCount: number;
   clientErrorCount: number;
@@ -192,11 +195,17 @@ async function defaultFetchDocument(
   RedirectAuditFetchResult
 > {
   const requested =
-    normalizeInternalUrl(
-      input.url,
-      input.url,
-      input.allowedHost,
-    );
+    input.preserveSearch
+      ? normalizeSitemapDocumentUrl(
+          input.url,
+          input.url,
+          input.allowedHost,
+        )
+      : normalizeInternalUrl(
+          input.url,
+          input.url,
+          input.allowedHost,
+        );
 
   if (!requested) {
     throw new Error(
@@ -286,11 +295,17 @@ async function defaultFetchDocument(
       }
 
       const next =
-        normalizeInternalUrl(
-          location,
-          current,
-          input.allowedHost,
-        );
+        input.preserveSearch
+          ? normalizeSitemapDocumentUrl(
+              location,
+              current,
+              input.allowedHost,
+            )
+          : normalizeInternalUrl(
+              location,
+              current,
+              input.allowedHost,
+            );
 
       if (!next) {
         return {
@@ -523,6 +538,7 @@ async function discoverSitemapInventory(
         url: next,
         allowedHost:
           input.allowedHost,
+        preserveSearch: true,
       });
 
     documentsFetched += 1;
@@ -551,7 +567,7 @@ async function discoverSitemapInventory(
         of parsed.sitemaps
       ) {
         const resolved =
-          normalizeInternalUrl(
+          normalizeSitemapDocumentUrl(
             child.loc,
             fetched.finalUrl,
             input.allowedHost,
@@ -845,6 +861,9 @@ export async function runRedirectAudit(
   let serverErrorCount =
     0;
 
+  let internalLinksUnverified =
+    0;
+
   const recordRedirect =
     (
       result:
@@ -924,6 +943,22 @@ export async function runRedirectAudit(
       );
     };
 
+  const isBrokenFetchResult =
+    (
+      result:
+        RedirectAuditFetchResult,
+    ) => {
+      return (
+        result.statusCode >= 400 ||
+        result.loopDetected ||
+        (
+          result.error !== null &&
+          result.error !==
+            "BODY_TOO_LARGE"
+        )
+      );
+    };
+
   for (
     const source
     of sourcePages
@@ -938,19 +973,9 @@ export async function runRedirectAudit(
             source.url,
           allowedHost,
         });
-    } catch (error) {
+    } catch {
       sourcePagesFailed +=
         1;
-
-      recordBroken(
-        source.url,
-        null,
-        error instanceof Error
-          ? error.message
-          : "FETCH_FAILED",
-        ["SITEMAP"],
-        [],
-      );
 
       continue;
     }
@@ -973,9 +998,20 @@ export async function runRedirectAudit(
     }
 
     if (
-      fetched.statusCode >= 400 ||
-      fetched.loopDetected ||
-      fetched.error
+      fetched.error ===
+        "BODY_TOO_LARGE" &&
+      fetched.statusCode < 400
+    ) {
+      sourcePagesFailed +=
+        1;
+
+      continue;
+    }
+
+    if (
+      isBrokenFetchResult(
+        fetched,
+      )
     ) {
       sourcePagesFailed +=
         1;
@@ -1074,16 +1110,9 @@ export async function runRedirectAudit(
           url: link,
           allowedHost,
         });
-    } catch (error) {
-      recordBroken(
-        link,
-        null,
-        error instanceof Error
-          ? error.message
-          : "FETCH_FAILED",
-        sources,
-        [],
-      );
+    } catch {
+      internalLinksUnverified +=
+        1;
 
       continue;
     }
@@ -1106,9 +1135,9 @@ export async function runRedirectAudit(
     }
 
     if (
-      fetched.statusCode >= 400 ||
-      fetched.loopDetected ||
-      fetched.error
+      isBrokenFetchResult(
+        fetched,
+      )
     ) {
       recordBroken(
         link,
@@ -1117,6 +1146,9 @@ export async function runRedirectAudit(
         sources,
         fetched.redirectChain,
       );
+    } else if (fetched.error) {
+      internalLinksUnverified +=
+        1;
     }
   }
 
@@ -1187,6 +1219,8 @@ export async function runRedirectAudit(
 
     internalLinksChecked:
       linksToCheck.length,
+
+    internalLinksUnverified,
 
     notFoundCount:
       brokenInternalLinks.filter(
