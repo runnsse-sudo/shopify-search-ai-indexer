@@ -71,6 +71,27 @@ export type RedirectAuditResult = {
   internalLinksChecked: number;
   internalLinksUnverified: number;
 
+  sourceConcurrency: number;
+  linkConcurrency: number;
+
+  timings: {
+    sitemapMs: number;
+    sourcePagesMs: number;
+    linkChecksMs: number;
+    totalMs: number;
+  };
+
+  coverage: {
+    sitemapDocumentsTruncated:
+      boolean;
+    sitemapUrlsTruncated:
+      boolean;
+    sourcePagesTruncated:
+      boolean;
+    internalLinksTruncated:
+      boolean;
+  };
+
   notFoundCount: number;
   clientErrorCount: number;
   serverErrorCount: number;
@@ -111,6 +132,18 @@ const DEFAULT_MAX_LINK_CHECKS =
 const MAX_LINK_CHECKS =
   250;
 
+const DEFAULT_SOURCE_CONCURRENCY =
+  3;
+
+const MAX_SOURCE_CONCURRENCY =
+  6;
+
+const DEFAULT_LINK_CONCURRENCY =
+  4;
+
+const MAX_LINK_CONCURRENCY =
+  8;
+
 const MAX_REDIRECTS =
   10;
 
@@ -141,6 +174,100 @@ function clampInteger(
     maximum,
   );
 }
+
+function clampConcurrency(
+  value: number | undefined,
+  defaultValue: number,
+  maximum: number,
+  errorCode: string,
+) {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  if (
+    !Number.isInteger(value) ||
+    value < 1
+  ) {
+    throw new Error(
+      errorCode,
+    );
+  }
+
+  return Math.min(
+    value,
+    maximum,
+  );
+}
+
+
+async function mapWithConcurrency<
+  T,
+  R
+>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (
+    item: T,
+    index: number,
+  ) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) {
+    return [];
+  }
+
+  const results =
+    new Array<R>(
+      items.length,
+    );
+
+  let nextIndex =
+    0;
+
+  const runWorker =
+    async () => {
+      for (;;) {
+        const index =
+          nextIndex;
+
+        nextIndex +=
+          1;
+
+        if (
+          index >=
+          items.length
+        ) {
+          return;
+        }
+
+        results[index] =
+          await worker(
+            items[index],
+            index,
+          );
+      }
+    };
+
+  const workerCount =
+    Math.min(
+      concurrency,
+      items.length,
+    );
+
+  await Promise.all(
+    Array.from(
+      {
+        length:
+          workerCount,
+      },
+      () =>
+        runWorker(),
+    ),
+  );
+
+  return results;
+}
+
 
 function storefrontBase(
   value: string,
@@ -509,13 +636,35 @@ async function discoverSitemapInventory(
   let documentsFetched =
     0;
 
+  let documentsTruncated =
+    false;
+
+  let urlsTruncated =
+    false;
+
   while (
-    queue.length > 0 &&
-    documentsFetched <
-      input.maxDocuments &&
-    urlMap.size <
-      input.maxUrls
+    queue.length > 0
   ) {
+    if (
+      documentsFetched >=
+      input.maxDocuments
+    ) {
+      documentsTruncated =
+        true;
+
+      break;
+    }
+
+    if (
+      urlMap.size >=
+      input.maxUrls
+    ) {
+      urlsTruncated =
+        true;
+
+      break;
+    }
+
     const next =
       queue.shift();
 
@@ -531,7 +680,9 @@ async function discoverSitemapInventory(
       continue;
     }
 
-    seenDocuments.add(next);
+    seenDocuments.add(
+      next,
+    );
 
     const fetched =
       await input.fetchDocument({
@@ -541,7 +692,8 @@ async function discoverSitemapInventory(
         preserveSearch: true,
       });
 
-    documentsFetched += 1;
+    documentsFetched +=
+      1;
 
     if (
       fetched.error ||
@@ -549,7 +701,15 @@ async function discoverSitemapInventory(
       fetched.statusCode >= 300
     ) {
       throw new Error(
-        `REDIRECT_AUDIT_SITEMAP_FETCH_FAILED:${next}:${fetched.statusCode}:${fetched.error ?? ""}`,
+        "REDIRECT_AUDIT_SITEMAP_FETCH_FAILED:" +
+          next +
+          ":" +
+          fetched.statusCode +
+          ":" +
+          (
+            fetched.error ??
+            ""
+          ),
       );
     }
 
@@ -596,6 +756,9 @@ async function discoverSitemapInventory(
         urlMap.size >=
         input.maxUrls
       ) {
+        urlsTruncated =
+          true;
+
         break;
       }
 
@@ -630,14 +793,29 @@ async function discoverSitemapInventory(
     }
   }
 
+  if (
+    queue.length > 0 &&
+    documentsFetched >=
+      input.maxDocuments
+  ) {
+    documentsTruncated =
+      true;
+  }
+
   return {
     documentsFetched,
+
     entries:
       Array.from(
         urlMap.values(),
       ),
+
+    documentsTruncated,
+
+    urlsTruncated,
   };
 }
+
 
 function selectSourcePages(
   entries:
@@ -748,12 +926,19 @@ export async function runRedirectAudit(
       number;
     maxLinkChecks?:
       number;
+    sourceConcurrency?:
+      number;
+    linkConcurrency?:
+      number;
     fetchDocument?:
       RedirectAuditFetcher;
   },
 ): Promise<
   RedirectAuditResult
 > {
+  const totalStartedAt =
+    Date.now();
+
   const base =
     storefrontBase(
       input.primaryDomain,
@@ -767,6 +952,7 @@ export async function runRedirectAudit(
       "/sitemap.xml",
       base,
     ).toString();
+
 
   const maxSitemapDocuments =
     clampInteger(
@@ -800,9 +986,37 @@ export async function runRedirectAudit(
       "REDIRECT_AUDIT_INVALID_LINK_LIMIT",
     );
 
+
+  const sourceConcurrency =
+    clampConcurrency(
+      input.sourceConcurrency,
+      DEFAULT_SOURCE_CONCURRENCY,
+      MAX_SOURCE_CONCURRENCY,
+      "REDIRECT_AUDIT_INVALID_SOURCE_CONCURRENCY",
+    );
+
+  const linkConcurrency =
+    clampConcurrency(
+      input.linkConcurrency,
+      DEFAULT_LINK_CONCURRENCY,
+      MAX_LINK_CONCURRENCY,
+      "REDIRECT_AUDIT_INVALID_LINK_CONCURRENCY",
+    );
+
+
   const fetchDocument =
     input.fetchDocument ??
     defaultFetchDocument;
+
+
+  // --------------------------------------------------------
+  // PHASE 1 — SITEMAP INVENTORY
+  //
+  // Sequential by design.
+  // --------------------------------------------------------
+
+  const sitemapStartedAt =
+    Date.now();
 
   const inventory =
     await discoverSitemapInventory({
@@ -816,11 +1030,17 @@ export async function runRedirectAudit(
       fetchDocument,
     });
 
+  const sitemapMs =
+    Date.now() -
+    sitemapStartedAt;
+
+
   const candidateUrls =
     inventory.entries.map(
       (entry) =>
         entry.url,
     );
+
 
   const sourcePages =
     selectSourcePages(
@@ -828,17 +1048,25 @@ export async function runRedirectAudit(
       maxSourcePages,
     );
 
+
+  const sourcePagesTruncated =
+    inventory.entries.length >
+    sourcePages.length;
+
+
   const linkSources =
     new Map<
       string,
       Set<string>
     >();
 
+
   const redirectMap =
     new Map<
       string,
       RedirectAuditRedirect
     >();
+
 
   const brokenMap =
     new Map<
@@ -848,6 +1076,7 @@ export async function runRedirectAudit(
         "suggestion"
       >
     >();
+
 
   let sourcePagesSucceeded =
     0;
@@ -863,6 +1092,7 @@ export async function runRedirectAudit(
 
   let internalLinksUnverified =
     0;
+
 
   const recordRedirect =
     (
@@ -897,6 +1127,7 @@ export async function runRedirectAudit(
       );
     };
 
+
   const recordBroken =
     (
       url: string,
@@ -910,7 +1141,9 @@ export async function runRedirectAudit(
         string[],
     ) => {
       const existing =
-        brokenMap.get(url);
+        brokenMap.get(
+          url,
+        );
 
       if (existing) {
         const mergedSources =
@@ -922,7 +1155,10 @@ export async function runRedirectAudit(
         existing.sourceUrls =
           Array.from(
             mergedSources,
-          ).slice(0, 10);
+          ).slice(
+            0,
+            10,
+          );
 
         return;
       }
@@ -943,6 +1179,7 @@ export async function runRedirectAudit(
       );
     };
 
+
   const isBrokenFetchResult =
     (
       result:
@@ -959,43 +1196,94 @@ export async function runRedirectAudit(
       );
     };
 
-  for (
-    const source
-    of sourcePages
-  ) {
-    let fetched:
-      RedirectAuditFetchResult;
 
-    try {
-      fetched =
-        await fetchDocument({
-          url:
-            source.url,
-          allowedHost,
-        });
-    } catch {
+  // --------------------------------------------------------
+  // PHASE 2 — SOURCE PAGES
+  //
+  // Fetches concurrent, processing deterministic.
+  // --------------------------------------------------------
+
+  const sourcePagesStartedAt =
+    Date.now();
+
+
+  const sourceOutcomes =
+    await mapWithConcurrency(
+      sourcePages,
+      sourceConcurrency,
+      async (
+        source,
+      ) => {
+        try {
+          const fetched =
+            await fetchDocument({
+              url:
+                source.url,
+              allowedHost,
+            });
+
+          return {
+            source,
+            fetched,
+            threw:
+              false,
+          };
+        } catch {
+          return {
+            source,
+            fetched:
+              null,
+            threw:
+              true,
+          };
+        }
+      },
+    );
+
+
+  for (
+    const outcome
+    of sourceOutcomes
+  ) {
+    const {
+      source,
+      fetched,
+      threw,
+    } =
+      outcome;
+
+    if (
+      threw ||
+      !fetched
+    ) {
       sourcePagesFailed +=
         1;
 
       continue;
     }
 
+
     recordRedirect(
       fetched,
     );
+
 
     if (
       fetched.statusCode >= 400 &&
       fetched.statusCode < 500
     ) {
-      clientErrorCount += 1;
+      clientErrorCount +=
+        1;
     }
+
 
     if (
       fetched.statusCode >= 500
     ) {
-      serverErrorCount += 1;
+      serverErrorCount +=
+        1;
     }
+
 
     if (
       fetched.error ===
@@ -1007,6 +1295,7 @@ export async function runRedirectAudit(
 
       continue;
     }
+
 
     if (
       isBrokenFetchResult(
@@ -1020,12 +1309,15 @@ export async function runRedirectAudit(
         source.url,
         fetched.statusCode,
         fetched.error,
-        ["SITEMAP"],
+        [
+          "SITEMAP",
+        ],
         fetched.redirectChain,
       );
 
       continue;
     }
+
 
     if (
       fetched.statusCode < 200 ||
@@ -1037,8 +1329,10 @@ export async function runRedirectAudit(
       continue;
     }
 
+
     sourcePagesSucceeded +=
       1;
+
 
     if (
       !isHtml(
@@ -1048,6 +1342,7 @@ export async function runRedirectAudit(
       continue;
     }
 
+
     const links =
       extractInternalLinks(
         fetched.html,
@@ -1055,11 +1350,15 @@ export async function runRedirectAudit(
         allowedHost,
       );
 
+
     for (
-      const link of links
+      const link
+      of links
     ) {
       let sources =
-        linkSources.get(link);
+        linkSources.get(
+          link,
+        );
 
       if (!sources) {
         sources =
@@ -1081,6 +1380,18 @@ export async function runRedirectAudit(
     }
   }
 
+
+  const sourcePagesMs =
+    Date.now() -
+    sourcePagesStartedAt;
+
+
+  // --------------------------------------------------------
+  // PHASE 3 — INTERNAL LINKS
+  //
+  // Fetches concurrent, processing deterministic.
+  // --------------------------------------------------------
+
   const linksToCheck =
     Array.from(
       linkSources.keys(),
@@ -1089,50 +1400,104 @@ export async function runRedirectAudit(
       maxLinkChecks,
     );
 
+
+  const internalLinksTruncated =
+    linkSources.size >
+    linksToCheck.length;
+
+
+  const linkChecksStartedAt =
+    Date.now();
+
+
+  const linkOutcomes =
+    await mapWithConcurrency(
+      linksToCheck,
+      linkConcurrency,
+      async (
+        link,
+      ) => {
+        const sources =
+          Array.from(
+            linkSources.get(
+              link,
+            ) ??
+            [],
+          );
+
+        try {
+          const fetched =
+            await fetchDocument({
+              url:
+                link,
+              allowedHost,
+            });
+
+          return {
+            link,
+            sources,
+            fetched,
+            threw:
+              false,
+          };
+        } catch {
+          return {
+            link,
+            sources,
+            fetched:
+              null,
+            threw:
+              true,
+          };
+        }
+      },
+    );
+
+
   for (
-    const link
-    of linksToCheck
+    const outcome
+    of linkOutcomes
   ) {
-    const sources =
-      Array.from(
-        linkSources.get(
-          link,
-        ) ??
-        [],
-      );
+    const {
+      link,
+      sources,
+      fetched,
+      threw,
+    } =
+      outcome;
 
-    let fetched:
-      RedirectAuditFetchResult;
-
-    try {
-      fetched =
-        await fetchDocument({
-          url: link,
-          allowedHost,
-        });
-    } catch {
+    if (
+      threw ||
+      !fetched
+    ) {
       internalLinksUnverified +=
         1;
 
       continue;
     }
 
+
     recordRedirect(
       fetched,
     );
+
 
     if (
       fetched.statusCode >= 400 &&
       fetched.statusCode < 500
     ) {
-      clientErrorCount += 1;
+      clientErrorCount +=
+        1;
     }
+
 
     if (
       fetched.statusCode >= 500
     ) {
-      serverErrorCount += 1;
+      serverErrorCount +=
+        1;
     }
+
 
     if (
       isBrokenFetchResult(
@@ -1146,11 +1511,23 @@ export async function runRedirectAudit(
         sources,
         fetched.redirectChain,
       );
-    } else if (fetched.error) {
+    } else if (
+      fetched.error
+    ) {
       internalLinksUnverified +=
         1;
     }
   }
+
+
+  const linkChecksMs =
+    Date.now() -
+    linkChecksStartedAt;
+
+
+  // --------------------------------------------------------
+  // FINAL DETERMINISTIC ANALYSIS
+  // --------------------------------------------------------
 
   const brokenInternalLinks =
     Array.from(
@@ -1169,11 +1546,13 @@ export async function runRedirectAudit(
       }),
     );
 
+
   const suggestionCounts = {
     HIGH: 0,
     MEDIUM: 0,
     LOW: 0,
   };
+
 
   for (
     const broken
@@ -1185,17 +1564,21 @@ export async function runRedirectAudit(
       suggestionCounts[
         broken.suggestion
           .confidence
-      ] += 1;
+      ] +=
+        1;
     }
   }
+
 
   const redirects =
     Array.from(
       redirectMap.values(),
     );
 
+
   return {
     rootSitemapUrl,
+
     primaryHost:
       allowedHost,
 
@@ -1221,6 +1604,34 @@ export async function runRedirectAudit(
       linksToCheck.length,
 
     internalLinksUnverified,
+
+    sourceConcurrency,
+
+    linkConcurrency,
+
+    timings: {
+      sitemapMs,
+      sourcePagesMs,
+      linkChecksMs,
+
+      totalMs:
+        Date.now() -
+        totalStartedAt,
+    },
+
+    coverage: {
+      sitemapDocumentsTruncated:
+        inventory
+          .documentsTruncated,
+
+      sitemapUrlsTruncated:
+        inventory
+          .urlsTruncated,
+
+      sourcePagesTruncated,
+
+      internalLinksTruncated,
+    },
 
     notFoundCount:
       brokenInternalLinks.filter(
