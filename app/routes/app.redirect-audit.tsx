@@ -429,6 +429,20 @@ export default function RedirectAudit() {
                 {" s · concurrency "}
                 {result.linkConcurrency}
               </s-list-item>
+
+              <s-list-item>
+                Audit deadline:{" "}
+                {(
+                  result.auditDeadlineMs /
+                  1000
+                ).toFixed(0)}
+                {" s"}
+              </s-list-item>
+
+              <s-list-item>
+                Fetch retries performed:{" "}
+                {result.retriesPerformed.toLocaleString()}
+              </s-list-item>
             </s-unordered-list>
 
             <s-unordered-list>
@@ -456,6 +470,13 @@ export default function RedirectAudit() {
               <s-list-item>
                 Internal-link checks limited:{" "}
                 {result.coverage.internalLinksTruncated
+                  ? "yes"
+                  : "no"}
+              </s-list-item>
+
+              <s-list-item>
+                Audit deadline reached:{" "}
+                {result.coverage.auditDeadlineReached
                   ? "yes"
                   : "no"}
               </s-list-item>

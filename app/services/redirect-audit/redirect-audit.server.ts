@@ -1,4 +1,12 @@
 import {
+  lookup as dnsLookup,
+} from "node:dns/promises";
+import {
+  BlockList,
+  isIP,
+} from "node:net";
+
+import {
   parseSitemapXml,
   classifySitemapUrl,
   type SitemapResourceType,
@@ -16,6 +24,7 @@ export type RedirectAuditFetchInput = {
   url: string;
   allowedHost: string;
   preserveSearch?: boolean;
+  deadlineAt?: number;
 };
 
 export type RedirectAuditFetchResult = {
@@ -74,6 +83,9 @@ export type RedirectAuditResult = {
   sourceConcurrency: number;
   linkConcurrency: number;
 
+  auditDeadlineMs: number;
+  retriesPerformed: number;
+
   timings: {
     sitemapMs: number;
     sourcePagesMs: number;
@@ -89,6 +101,8 @@ export type RedirectAuditResult = {
     sourcePagesTruncated:
       boolean;
     internalLinksTruncated:
+      boolean;
+    auditDeadlineReached:
       boolean;
   };
 
@@ -149,6 +163,672 @@ const MAX_REDIRECTS =
 
 const MAX_BODY_BYTES =
   2 * 1024 * 1024;
+
+const MAX_SITEMAP_BODY_BYTES =
+  20 * 1024 * 1024;
+
+const FETCH_TIMEOUT_MS =
+  15_000;
+
+const DEFAULT_AUDIT_DEADLINE_MS =
+  180_000;
+
+const MAX_AUDIT_DEADLINE_MS =
+  240_000;
+
+const MAX_FETCH_ATTEMPTS =
+  3;
+
+const RETRY_DELAYS_MS =
+  [
+    100,
+    300,
+  ] as const;
+
+const blockedAddresses =
+  new BlockList();
+
+for (
+  const [
+    network,
+    prefix,
+  ]
+  of [
+    ["0.0.0.0", 8],
+    ["10.0.0.0", 8],
+    ["100.64.0.0", 10],
+    ["127.0.0.0", 8],
+    ["169.254.0.0", 16],
+    ["172.16.0.0", 12],
+    ["192.0.0.0", 24],
+    ["192.0.2.0", 24],
+    ["192.88.99.0", 24],
+    ["192.168.0.0", 16],
+    ["198.18.0.0", 15],
+    ["198.51.100.0", 24],
+    ["203.0.113.0", 24],
+    ["224.0.0.0", 4],
+    ["240.0.0.0", 4],
+  ] as const
+) {
+  blockedAddresses.addSubnet(
+    network,
+    prefix,
+    "ipv4",
+  );
+}
+
+for (
+  const [
+    network,
+    prefix,
+  ]
+  of [
+    ["::", 128],
+    ["::1", 128],
+    ["64:ff9b::", 96],
+    ["100::", 64],
+    ["2001:db8::", 32],
+    ["fc00::", 7],
+    ["fe80::", 10],
+    ["ff00::", 8],
+  ] as const
+) {
+  blockedAddresses.addSubnet(
+    network,
+    prefix,
+    "ipv6",
+  );
+}
+
+
+function normalizeHostnameForSecurity(
+  value: string,
+) {
+  let normalized =
+    value
+      .trim()
+      .toLowerCase();
+
+  if (
+    normalized.endsWith(
+      ".",
+    )
+  ) {
+    normalized =
+      normalized.slice(
+        0,
+        -1,
+      );
+  }
+
+  if (
+    normalized.startsWith(
+      "[",
+    ) &&
+    normalized.endsWith(
+      "]",
+    )
+  ) {
+    normalized =
+      normalized.slice(
+        1,
+        -1,
+      );
+  }
+
+  return normalized;
+}
+
+
+export function isBlockedRedirectAuditAddress(
+  address: string,
+) {
+  const normalized =
+    normalizeHostnameForSecurity(
+      address,
+    );
+
+  const family =
+    isIP(
+      normalized,
+    );
+
+  if (family === 4) {
+    return blockedAddresses.check(
+      normalized,
+      "ipv4",
+    );
+  }
+
+  if (family === 6) {
+    return blockedAddresses.check(
+      normalized,
+      "ipv6",
+    );
+  }
+
+  return true;
+}
+
+
+function deadlineReached(
+  deadlineAt: number,
+) {
+  return (
+    Date.now() >=
+    deadlineAt
+  );
+}
+
+
+function createDeadlineResult(
+  input:
+    RedirectAuditFetchInput,
+): RedirectAuditFetchResult {
+  return {
+    requestedUrl:
+      input.url,
+    finalUrl:
+      input.url,
+    statusCode:
+      0,
+    html: "",
+    redirectChain: [],
+    loopDetected:
+      false,
+    contentType:
+      null,
+    error:
+      "AUDIT_DEADLINE_EXCEEDED",
+  };
+}
+
+
+async function lookupPublicAddresses(
+  hostname: string,
+  deadlineAt: number,
+) {
+  const remaining =
+    deadlineAt -
+    Date.now();
+
+  if (remaining <= 0) {
+    throw new Error(
+      "AUDIT_DEADLINE_EXCEEDED",
+    );
+  }
+
+  let timeout:
+    ReturnType<
+      typeof setTimeout
+    > | null =
+      null;
+
+  try {
+    return await Promise.race([
+      dnsLookup(
+        hostname,
+        {
+          all: true,
+          verbatim: true,
+        },
+      ),
+
+      new Promise<never>(
+        (_, reject) => {
+          timeout =
+            setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    "AUDIT_DEADLINE_EXCEEDED",
+                  ),
+                ),
+              remaining,
+            );
+        },
+      ),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(
+        timeout,
+      );
+    }
+  }
+}
+
+
+async function assertPublicDnsHost(
+  hostname: string,
+  deadlineAt: number,
+) {
+  const normalized =
+    normalizeHostnameForSecurity(
+      hostname,
+    );
+
+  if (
+    !normalized ||
+    normalized === "localhost" ||
+    normalized.endsWith(
+      ".localhost",
+    )
+  ) {
+    throw new Error(
+      "REDIRECT_AUDIT_PRIVATE_ADDRESS_BLOCKED",
+    );
+  }
+
+  if (
+    isIP(
+      normalized,
+    ) !== 0
+  ) {
+    throw new Error(
+      "REDIRECT_AUDIT_IP_LITERAL_NOT_ALLOWED",
+    );
+  }
+
+  const resolved =
+    await lookupPublicAddresses(
+      normalized,
+      deadlineAt,
+    );
+
+  if (resolved.length === 0) {
+    throw new Error(
+      "REDIRECT_AUDIT_DNS_LOOKUP_EMPTY",
+    );
+  }
+
+  for (
+    const entry
+    of resolved
+  ) {
+    if (
+      isBlockedRedirectAuditAddress(
+        entry.address,
+      )
+    ) {
+      throw new Error(
+        "REDIRECT_AUDIT_PRIVATE_ADDRESS_BLOCKED",
+      );
+    }
+  }
+}
+
+
+function clampPositiveInteger(
+  value: number | undefined,
+  defaultValue: number,
+  maximum: number,
+  errorCode: string,
+) {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  if (
+    !Number.isInteger(value) ||
+    value < 1
+  ) {
+    throw new Error(
+      errorCode,
+    );
+  }
+
+  return Math.min(
+    value,
+    maximum,
+  );
+}
+
+
+function retryableStatus(
+  statusCode: number,
+) {
+  return (
+    statusCode === 429 ||
+    statusCode === 500 ||
+    statusCode === 502 ||
+    statusCode === 503 ||
+    statusCode === 504
+  );
+}
+
+
+function nonRetryableSecurityError(
+  error: unknown,
+) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.message ===
+      "REDIRECT_AUDIT_PRIVATE_ADDRESS_BLOCKED" ||
+    error.message ===
+      "REDIRECT_AUDIT_IP_LITERAL_NOT_ALLOWED"
+  );
+}
+
+
+function isDeadlineError(
+  error: unknown,
+) {
+  return (
+    error instanceof Error &&
+    error.message ===
+      "AUDIT_DEADLINE_EXCEEDED"
+  );
+}
+
+
+async function waitForRetry(
+  milliseconds: number,
+  deadlineAt: number,
+) {
+  const remaining =
+    deadlineAt -
+    Date.now();
+
+  if (remaining <= 0) {
+    return;
+  }
+
+  await new Promise<void>(
+    (resolve) =>
+      setTimeout(
+        resolve,
+        Math.min(
+          milliseconds,
+          remaining,
+        ),
+      ),
+  );
+}
+
+
+async function fetchDocumentWithRetry(
+  input: {
+    fetchDocument:
+      RedirectAuditFetcher;
+    request:
+      RedirectAuditFetchInput;
+    deadlineAt: number;
+    onRetry: () => void;
+  },
+): Promise<
+  RedirectAuditFetchResult
+> {
+  let lastError:
+    unknown =
+      null;
+
+  for (
+    let attempt = 0;
+    attempt <
+      MAX_FETCH_ATTEMPTS;
+    attempt++
+  ) {
+    if (
+      deadlineReached(
+        input.deadlineAt,
+      )
+    ) {
+      return createDeadlineResult(
+        input.request,
+      );
+    }
+
+    try {
+      const result =
+        await input.fetchDocument({
+          ...input.request,
+          deadlineAt:
+            input.deadlineAt,
+        });
+
+      if (
+        deadlineReached(
+          input.deadlineAt,
+        )
+      ) {
+        return createDeadlineResult(
+          input.request,
+        );
+      }
+
+      if (
+        result.error ===
+        "AUDIT_DEADLINE_EXCEEDED"
+      ) {
+        return result;
+      }
+
+      if (
+        retryableStatus(
+          result.statusCode,
+        ) &&
+        attempt <
+          MAX_FETCH_ATTEMPTS -
+            1
+      ) {
+        input.onRetry();
+
+        await waitForRetry(
+          RETRY_DELAYS_MS[
+            attempt
+          ] ??
+            RETRY_DELAYS_MS[
+              RETRY_DELAYS_MS.length -
+                1
+            ],
+          input.deadlineAt,
+        );
+
+        continue;
+      }
+
+      return result;
+    } catch (error) {
+      lastError =
+        error;
+
+      if (
+        deadlineReached(
+          input.deadlineAt,
+        ) ||
+        isDeadlineError(
+          error,
+        )
+      ) {
+        return createDeadlineResult(
+          input.request,
+        );
+      }
+
+      if (
+        nonRetryableSecurityError(
+          error,
+        ) ||
+        attempt >=
+          MAX_FETCH_ATTEMPTS -
+            1
+      ) {
+        throw error;
+      }
+
+      input.onRetry();
+
+      await waitForRetry(
+        RETRY_DELAYS_MS[
+          attempt
+        ] ??
+          RETRY_DELAYS_MS[
+            RETRY_DELAYS_MS.length -
+              1
+          ],
+        input.deadlineAt,
+      );
+    }
+  }
+
+  throw (
+    lastError ??
+    new Error(
+      "REDIRECT_AUDIT_RETRY_UNREACHABLE",
+    )
+  );
+}
+
+
+async function cancelResponseBody(
+  response: Response,
+) {
+  if (!response.body) {
+    return;
+  }
+
+  try {
+    await response.body.cancel();
+  } catch {
+    // Best-effort connection/body cleanup only.
+  }
+}
+
+
+async function readResponseTextWithLimit(
+  response: Response,
+  maximumBytes: number,
+): Promise<{
+  html: string;
+  tooLarge: boolean;
+}> {
+  const declaredLength =
+    response.headers.get(
+      "content-length",
+    );
+
+  if (declaredLength) {
+    const parsedLength =
+      Number(
+        declaredLength,
+      );
+
+    if (
+      Number.isFinite(
+        parsedLength,
+      ) &&
+      parsedLength >
+        maximumBytes
+    ) {
+      await cancelResponseBody(
+        response,
+      );
+
+      return {
+        html: "",
+        tooLarge:
+          true,
+      };
+    }
+  }
+
+  if (!response.body) {
+    const html =
+      await response.text();
+
+    return {
+      html:
+        Buffer.byteLength(
+          html,
+          "utf8",
+        ) >
+        maximumBytes
+          ? ""
+          : html,
+
+      tooLarge:
+        Buffer.byteLength(
+          html,
+          "utf8",
+        ) >
+        maximumBytes,
+    };
+  }
+
+  const reader =
+    response.body.getReader();
+
+  const chunks:
+    Buffer[] = [];
+
+  let totalBytes =
+    0;
+
+  try {
+    for (;;) {
+      const {
+        value,
+        done,
+      } =
+        await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      if (!value) {
+        continue;
+      }
+
+      totalBytes +=
+        value.byteLength;
+
+      if (
+        totalBytes >
+        maximumBytes
+      ) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Best effort.
+        }
+
+        return {
+          html: "",
+          tooLarge:
+            true,
+        };
+      }
+
+      chunks.push(
+        Buffer.from(
+          value,
+        ),
+      );
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return {
+    html:
+      Buffer.concat(
+        chunks,
+        totalBytes,
+      ).toString(
+        "utf8",
+      ),
+
+    tooLarge:
+      false,
+  };
+}
+
 
 function clampInteger(
   value: number | undefined,
@@ -276,7 +956,8 @@ function storefrontBase(
     value.includes("://")
       ? new URL(value)
       : new URL(
-          `https://${value}`,
+          "https://" +
+            value,
         );
 
   if (
@@ -296,12 +977,31 @@ function storefrontBase(
     );
   }
 
+  if (parsed.port) {
+    throw new Error(
+      "REDIRECT_AUDIT_NON_DEFAULT_PORT_NOT_ALLOWED",
+    );
+  }
+
+  if (
+    isIP(
+      normalizeHostnameForSecurity(
+        parsed.hostname,
+      ),
+    ) !== 0
+  ) {
+    throw new Error(
+      "REDIRECT_AUDIT_IP_LITERAL_NOT_ALLOWED",
+    );
+  }
+
   parsed.pathname = "/";
   parsed.search = "";
   parsed.hash = "";
 
   return parsed;
 }
+
 
 function isRedirectStatus(
   value: number,
@@ -340,6 +1040,13 @@ async function defaultFetchDocument(
     );
   }
 
+  const deadlineAt =
+    input.deadlineAt ??
+    (
+      Date.now() +
+      FETCH_TIMEOUT_MS
+    );
+
   let current =
     requested;
 
@@ -356,6 +1063,40 @@ async function defaultFetchDocument(
     hop <= MAX_REDIRECTS;
     hop++
   ) {
+    if (
+      deadlineReached(
+        deadlineAt,
+      )
+    ) {
+      return createDeadlineResult({
+        ...input,
+        url:
+          requested,
+      });
+    }
+
+    const currentUrl =
+      new URL(
+        current,
+      );
+
+    await assertPublicDnsHost(
+      currentUrl.hostname,
+      deadlineAt,
+    );
+
+    const remainingMs =
+      deadlineAt -
+      Date.now();
+
+    if (remainingMs <= 0) {
+      return createDeadlineResult({
+        ...input,
+        url:
+          requested,
+      });
+    }
+
     const controller =
       new AbortController();
 
@@ -363,14 +1104,17 @@ async function defaultFetchDocument(
       setTimeout(
         () =>
           controller.abort(),
-        15_000,
+        Math.max(
+          1,
+          Math.min(
+            FETCH_TIMEOUT_MS,
+            remainingMs,
+          ),
+        ),
       );
 
-    let response:
-      Response;
-
     try {
-      response =
+      const response =
         await fetch(
           current,
           {
@@ -386,147 +1130,159 @@ async function defaultFetchDocument(
               controller.signal,
           },
         );
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (
-      isRedirectStatus(
-        response.status,
-      )
-    ) {
-      const location =
-        response.headers.get(
-          "location",
-        );
-
-      if (!location) {
-        return {
-          requestedUrl:
-            requested,
-          finalUrl:
-            current,
-          statusCode:
-            response.status,
-          html: "",
-          redirectChain,
-          loopDetected:
-            false,
-          contentType:
-            response.headers.get(
-              "content-type",
-            ),
-          error:
-            "REDIRECT_WITHOUT_LOCATION",
-        };
-      }
-
-      const next =
-        input.preserveSearch
-          ? normalizeSitemapDocumentUrl(
-              location,
-              current,
-              input.allowedHost,
-            )
-          : normalizeInternalUrl(
-              location,
-              current,
-              input.allowedHost,
-            );
-
-      if (!next) {
-        return {
-          requestedUrl:
-            requested,
-          finalUrl:
-            current,
-          statusCode:
-            response.status,
-          html: "",
-          redirectChain,
-          loopDetected:
-            false,
-          contentType:
-            response.headers.get(
-              "content-type",
-            ),
-          error:
-            "REDIRECT_OUTSIDE_HOST",
-        };
-      }
-
-      redirectChain.push(
-        next,
-      );
-
-      if (seen.has(next)) {
-        return {
-          requestedUrl:
-            requested,
-          finalUrl:
-            next,
-          statusCode:
-            response.status,
-          html: "",
-          redirectChain,
-          loopDetected:
-            true,
-          contentType:
-            response.headers.get(
-              "content-type",
-            ),
-          error:
-            "REDIRECT_LOOP",
-        };
-      }
-
-      seen.add(next);
-
-      if (hop >= MAX_REDIRECTS) {
-        return {
-          requestedUrl:
-            requested,
-          finalUrl:
-            next,
-          statusCode:
-            response.status,
-          html: "",
-          redirectChain,
-          loopDetected:
-            false,
-          contentType:
-            response.headers.get(
-              "content-type",
-            ),
-          error:
-            "TOO_MANY_REDIRECTS",
-        };
-      }
-
-      current =
-        next;
-
-      continue;
-    }
-
-    const declaredLength =
-      response.headers.get(
-        "content-length",
-      );
-
-    if (declaredLength) {
-      const parsedLength =
-        Number(
-          declaredLength,
-        );
 
       if (
-        Number.isFinite(
-          parsedLength,
-        ) &&
-        parsedLength >
-          MAX_BODY_BYTES
+        isRedirectStatus(
+          response.status,
+        )
       ) {
+        const location =
+          response.headers.get(
+            "location",
+          );
+
+        if (!location) {
+          await cancelResponseBody(
+            response,
+          );
+
+          return {
+            requestedUrl:
+              requested,
+            finalUrl:
+              current,
+            statusCode:
+              response.status,
+            html: "",
+            redirectChain,
+            loopDetected:
+              false,
+            contentType:
+              response.headers.get(
+                "content-type",
+              ),
+            error:
+              "REDIRECT_WITHOUT_LOCATION",
+          };
+        }
+
+        const next =
+          input.preserveSearch
+            ? normalizeSitemapDocumentUrl(
+                location,
+                current,
+                input.allowedHost,
+              )
+            : normalizeInternalUrl(
+                location,
+                current,
+                input.allowedHost,
+              );
+
+        if (!next) {
+          await cancelResponseBody(
+            response,
+          );
+
+          return {
+            requestedUrl:
+              requested,
+            finalUrl:
+              current,
+            statusCode:
+              response.status,
+            html: "",
+            redirectChain,
+            loopDetected:
+              false,
+            contentType:
+              response.headers.get(
+                "content-type",
+              ),
+            error:
+              "REDIRECT_OUTSIDE_HOST",
+          };
+        }
+
+        await cancelResponseBody(
+          response,
+        );
+
+        redirectChain.push(
+          next,
+        );
+
+        if (
+          seen.has(
+            next,
+          )
+        ) {
+          return {
+            requestedUrl:
+              requested,
+            finalUrl:
+              next,
+            statusCode:
+              response.status,
+            html: "",
+            redirectChain,
+            loopDetected:
+              true,
+            contentType:
+              response.headers.get(
+                "content-type",
+              ),
+            error:
+              "REDIRECT_LOOP",
+          };
+        }
+
+        seen.add(
+          next,
+        );
+
+        if (
+          hop >=
+          MAX_REDIRECTS
+        ) {
+          return {
+            requestedUrl:
+              requested,
+            finalUrl:
+              next,
+            statusCode:
+              response.status,
+            html: "",
+            redirectChain,
+            loopDetected:
+              false,
+            contentType:
+              response.headers.get(
+                "content-type",
+              ),
+            error:
+              "TOO_MANY_REDIRECTS",
+          };
+        }
+
+        current =
+          next;
+
+        continue;
+      }
+
+      const bodyLimit =
+        input.preserveSearch
+          ? MAX_SITEMAP_BODY_BYTES
+          : MAX_BODY_BYTES;
+
+      const body =
+        await readResponseTextWithLimit(
+          response,
+          bodyLimit,
+        );
+
+      if (body.tooLarge) {
         return {
           requestedUrl:
             requested,
@@ -546,18 +1302,7 @@ async function defaultFetchDocument(
             "BODY_TOO_LARGE",
         };
       }
-    }
 
-    const html =
-      await response.text();
-
-    if (
-      Buffer.byteLength(
-        html,
-        "utf8",
-      ) >
-      MAX_BODY_BYTES
-    ) {
       return {
         requestedUrl:
           requested,
@@ -565,7 +1310,8 @@ async function defaultFetchDocument(
           current,
         statusCode:
           response.status,
-        html: "",
+        html:
+          body.html,
         redirectChain,
         loopDetected:
           false,
@@ -574,34 +1320,20 @@ async function defaultFetchDocument(
             "content-type",
           ),
         error:
-          "BODY_TOO_LARGE",
+          null,
       };
+    } finally {
+      clearTimeout(
+        timer,
+      );
     }
-
-    return {
-      requestedUrl:
-        requested,
-      finalUrl:
-        current,
-      statusCode:
-        response.status,
-      html,
-      redirectChain,
-      loopDetected:
-        false,
-      contentType:
-        response.headers.get(
-          "content-type",
-        ),
-      error:
-        null,
-    };
   }
 
   throw new Error(
     "REDIRECT_AUDIT_UNREACHABLE",
   );
 }
+
 
 type SitemapInventoryEntry = {
   url: string;
@@ -615,6 +1347,7 @@ async function discoverSitemapInventory(
     allowedHost: string;
     maxDocuments: number;
     maxUrls: number;
+    deadlineAt: number;
     fetchDocument:
       RedirectAuditFetcher;
   },
@@ -642,9 +1375,26 @@ async function discoverSitemapInventory(
   let urlsTruncated =
     false;
 
+  let deadlineWasReached =
+    false;
+
   while (
     queue.length > 0
   ) {
+    if (
+      deadlineReached(
+        input.deadlineAt,
+      )
+    ) {
+      deadlineWasReached =
+        true;
+
+      documentsTruncated =
+        true;
+
+      break;
+    }
+
     if (
       documentsFetched >=
       input.maxDocuments
@@ -690,7 +1440,22 @@ async function discoverSitemapInventory(
         allowedHost:
           input.allowedHost,
         preserveSearch: true,
+        deadlineAt:
+          input.deadlineAt,
       });
+
+    if (
+      fetched.error ===
+      "AUDIT_DEADLINE_EXCEEDED"
+    ) {
+      deadlineWasReached =
+        true;
+
+      documentsTruncated =
+        true;
+
+      break;
+    }
 
     documentsFetched +=
       1;
@@ -813,6 +1578,8 @@ async function discoverSitemapInventory(
     documentsTruncated,
 
     urlsTruncated,
+
+    deadlineWasReached,
   };
 }
 
@@ -930,6 +1697,8 @@ export async function runRedirectAudit(
       number;
     linkConcurrency?:
       number;
+    maxAuditMs?:
+      number;
     fetchDocument?:
       RedirectAuditFetcher;
   },
@@ -987,6 +1756,19 @@ export async function runRedirectAudit(
     );
 
 
+  const auditDeadlineMs =
+    clampPositiveInteger(
+      input.maxAuditMs,
+      DEFAULT_AUDIT_DEADLINE_MS,
+      MAX_AUDIT_DEADLINE_MS,
+      "REDIRECT_AUDIT_INVALID_DEADLINE",
+    );
+
+  const deadlineAt =
+    totalStartedAt +
+    auditDeadlineMs;
+
+
   const sourceConcurrency =
     clampConcurrency(
       input.sourceConcurrency,
@@ -1004,9 +1786,28 @@ export async function runRedirectAudit(
     );
 
 
-  const fetchDocument =
+  const rawFetchDocument =
     input.fetchDocument ??
     defaultFetchDocument;
+
+  let retriesPerformed =
+    0;
+
+  const fetchDocument:
+    RedirectAuditFetcher =
+      async (
+        request,
+      ) =>
+        fetchDocumentWithRetry({
+          fetchDocument:
+            rawFetchDocument,
+          request,
+          deadlineAt,
+          onRetry: () => {
+            retriesPerformed +=
+              1;
+          },
+        });
 
 
   // --------------------------------------------------------
@@ -1027,8 +1828,12 @@ export async function runRedirectAudit(
         maxSitemapDocuments,
       maxUrls:
         maxSitemapUrls,
+      deadlineAt,
       fetchDocument,
     });
+
+  let auditDeadlineReached =
+    inventory.deadlineWasReached;
 
   const sitemapMs =
     Date.now() -
@@ -1049,7 +1854,7 @@ export async function runRedirectAudit(
     );
 
 
-  const sourcePagesTruncated =
+  let sourcePagesTruncated =
     inventory.entries.length >
     sourcePages.length;
 
@@ -1191,7 +1996,9 @@ export async function runRedirectAudit(
         (
           result.error !== null &&
           result.error !==
-            "BODY_TOO_LARGE"
+            "BODY_TOO_LARGE" &&
+          result.error !==
+            "AUDIT_DEADLINE_EXCEEDED"
         )
       );
     };
@@ -1258,6 +2065,20 @@ export async function runRedirectAudit(
     ) {
       sourcePagesFailed +=
         1;
+
+      continue;
+    }
+
+
+    if (
+      fetched.error ===
+      "AUDIT_DEADLINE_EXCEEDED"
+    ) {
+      auditDeadlineReached =
+        true;
+
+      sourcePagesTruncated =
+        true;
 
       continue;
     }
@@ -1401,7 +2222,7 @@ export async function runRedirectAudit(
     );
 
 
-  const internalLinksTruncated =
+  let internalLinksTruncated =
     linkSources.size >
     linksToCheck.length;
 
@@ -1470,6 +2291,23 @@ export async function runRedirectAudit(
       threw ||
       !fetched
     ) {
+      internalLinksUnverified +=
+        1;
+
+      continue;
+    }
+
+
+    if (
+      fetched.error ===
+      "AUDIT_DEADLINE_EXCEEDED"
+    ) {
+      auditDeadlineReached =
+        true;
+
+      internalLinksTruncated =
+        true;
+
       internalLinksUnverified +=
         1;
 
@@ -1609,6 +2447,10 @@ export async function runRedirectAudit(
 
     linkConcurrency,
 
+    auditDeadlineMs,
+
+    retriesPerformed,
+
     timings: {
       sitemapMs,
       sourcePagesMs,
@@ -1631,6 +2473,8 @@ export async function runRedirectAudit(
       sourcePagesTruncated,
 
       internalLinksTruncated,
+
+      auditDeadlineReached,
     },
 
     notFoundCount:
