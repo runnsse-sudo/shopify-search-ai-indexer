@@ -8,6 +8,7 @@ import {
 } from "../build-tests/redirect-audit.mjs";
 
 import {
+  isBlockedRedirectAuditAddress,
   runRedirectAudit,
 } from "../build-tests/redirect-audit-server.mjs";
 
@@ -45,6 +46,33 @@ assert.equal(
     "example.com",
   ),
   null,
+);
+
+assert.equal(
+  normalizeInternalUrl(
+    "https://example.com:4443/products/widget",
+    "https://example.com/pages/home",
+    "example.com",
+  ),
+  null,
+);
+
+assert.equal(
+  normalizeSitemapDocumentUrl(
+    "https://example.com:4443/sitemap.xml?from=1&to=2",
+    "https://example.com/sitemap.xml",
+    "example.com",
+  ),
+  null,
+);
+
+assert.equal(
+  normalizeInternalUrl(
+    "https://example.com:443/products/widget",
+    "https://example.com/pages/home",
+    "example.com",
+  ),
+  "https://example.com/products/widget",
 );
 
 const extracted =
@@ -116,6 +144,72 @@ const mediumSuggestion =
 assert.equal(
   mediumSuggestion?.confidence,
   "MEDIUM",
+);
+
+assert.doesNotThrow(
+  () =>
+    suggestRedirect(
+      "https://example.com/products/%E0%A4%A",
+      [
+        "https://example.com/products/widget",
+      ],
+    ),
+);
+
+assert.equal(
+  isBlockedRedirectAuditAddress(
+    "127.0.0.1",
+  ),
+  true,
+);
+
+assert.equal(
+  isBlockedRedirectAuditAddress(
+    "10.10.10.10",
+  ),
+  true,
+);
+
+assert.equal(
+  isBlockedRedirectAuditAddress(
+    "169.254.169.254",
+  ),
+  true,
+);
+
+assert.equal(
+  isBlockedRedirectAuditAddress(
+    "192.168.1.1",
+  ),
+  true,
+);
+
+assert.equal(
+  isBlockedRedirectAuditAddress(
+    "::1",
+  ),
+  true,
+);
+
+assert.equal(
+  isBlockedRedirectAuditAddress(
+    "fc00::1",
+  ),
+  true,
+);
+
+assert.equal(
+  isBlockedRedirectAuditAddress(
+    "8.8.8.8",
+  ),
+  false,
+);
+
+assert.equal(
+  isBlockedRedirectAuditAddress(
+    "2606:4700:4700::1111",
+  ),
+  false,
 );
 
 console.log(
@@ -555,6 +649,21 @@ assert.equal(
 );
 
 assert.equal(
+  result.auditDeadlineMs,
+  180_000,
+);
+
+assert.equal(
+  result.retriesPerformed,
+  0,
+);
+
+assert.equal(
+  result.coverage.auditDeadlineReached,
+  false,
+);
+
+assert.equal(
   maxActiveNonSitemapFetches,
   3,
 );
@@ -698,7 +807,175 @@ assert.equal(
 
 
 // ----------------------------------------------------------
-// Invalid concurrency must fail closed.
+// Transient status retries.
+// ----------------------------------------------------------
+
+let transientRootAttempts =
+  0;
+
+const transientFetch =
+  async (
+    input,
+  ) => {
+    if (
+      input.url ===
+      "https://example.com/sitemap.xml"
+    ) {
+      transientRootAttempts +=
+        1;
+
+      if (
+        transientRootAttempts <=
+        2
+      ) {
+        return {
+          requestedUrl:
+            input.url,
+          finalUrl:
+            input.url,
+          statusCode:
+            503,
+          html: "",
+          redirectChain: [],
+          loopDetected:
+            false,
+          contentType:
+            "text/plain",
+          error:
+            null,
+        };
+      }
+    }
+
+    return fetchDocumentFixture(
+      input,
+    );
+  };
+
+
+const retryResult =
+  await runRedirectAudit({
+    primaryDomain:
+      "example.com",
+    maxSourcePages:
+      0,
+    maxLinkChecks:
+      0,
+    maxAuditMs:
+      5_000,
+    fetchDocument:
+      transientFetch,
+  });
+
+
+assert.equal(
+  transientRootAttempts,
+  3,
+);
+
+assert.equal(
+  retryResult.retriesPerformed,
+  2,
+);
+
+assert.equal(
+  retryResult.coverage.auditDeadlineReached,
+  false,
+);
+
+
+// ----------------------------------------------------------
+// Fetch that finishes AFTER the global deadline must be
+// classified as deadline exhaustion.
+// ----------------------------------------------------------
+
+const slowFetch =
+  async (
+    input,
+  ) => {
+    if (
+      input.preserveSearch !==
+      true
+    ) {
+      await new Promise(
+        (resolve) =>
+          setTimeout(
+            resolve,
+            30,
+          ),
+      );
+    }
+
+    return fetchDocumentFixture(
+      input,
+    );
+  };
+
+
+const deadlineResult =
+  await runRedirectAudit({
+    primaryDomain:
+      "example.com",
+    maxSourcePages:
+      3,
+    maxLinkChecks:
+      10,
+    sourceConcurrency:
+      1,
+    linkConcurrency:
+      1,
+    maxAuditMs:
+      10,
+    fetchDocument:
+      slowFetch,
+  });
+
+
+assert.equal(
+  deadlineResult.auditDeadlineMs,
+  10,
+);
+
+assert.equal(
+  deadlineResult.coverage.auditDeadlineReached,
+  true,
+);
+
+assert.equal(
+  deadlineResult.coverage.sourcePagesTruncated,
+  true,
+);
+
+
+// ----------------------------------------------------------
+// IP literals and non-default storefront ports fail closed.
+// ----------------------------------------------------------
+
+await assert.rejects(
+  () =>
+    runRedirectAudit({
+      primaryDomain:
+        "127.0.0.1",
+      fetchDocument:
+        fetchDocumentFixture,
+    }),
+  /REDIRECT_AUDIT_IP_LITERAL_NOT_ALLOWED/,
+);
+
+await assert.rejects(
+  () =>
+    runRedirectAudit({
+      primaryDomain:
+        "https://example.com:4443",
+      fetchDocument:
+        fetchDocumentFixture,
+    }),
+  /REDIRECT_AUDIT_NON_DEFAULT_PORT_NOT_ALLOWED/,
+);
+
+
+// ----------------------------------------------------------
+// Invalid concurrency/deadline must fail closed.
 // ----------------------------------------------------------
 
 await assert.rejects(
@@ -725,6 +1002,19 @@ await assert.rejects(
         fetchDocumentFixture,
     }),
   /REDIRECT_AUDIT_INVALID_LINK_CONCURRENCY/,
+);
+
+await assert.rejects(
+  () =>
+    runRedirectAudit({
+      primaryDomain:
+        "example.com",
+      maxAuditMs:
+        0,
+      fetchDocument:
+        fetchDocumentFixture,
+    }),
+  /REDIRECT_AUDIT_INVALID_DEADLINE/,
 );
 
 
@@ -775,6 +1065,26 @@ console.log(
 
 console.log(
   "REDIRECT_AUDIT_DETERMINISTIC_CONCURRENCY_PASS",
+);
+
+console.log(
+  "REDIRECT_AUDIT_PORT_SECURITY_PASS",
+);
+
+console.log(
+  "REDIRECT_AUDIT_MALFORMED_PATH_PASS",
+);
+
+console.log(
+  "REDIRECT_AUDIT_ADDRESS_GUARD_PASS",
+);
+
+console.log(
+  "REDIRECT_AUDIT_RETRY_PASS",
+);
+
+console.log(
+  "REDIRECT_AUDIT_DEADLINE_PASS",
 );
 
 console.log(

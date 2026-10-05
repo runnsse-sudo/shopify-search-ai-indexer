@@ -53,6 +53,10 @@ function normalizeSameHostUrl(
       return null;
     }
 
+    if (parsed.port) {
+      return null;
+    }
+
     if (
       normalizeHost(
         parsed.hostname,
@@ -201,6 +205,18 @@ function pathSegments(
   }
 }
 
+function safeDecodePathSegment(
+  value: string,
+) {
+  try {
+    return decodeURIComponent(
+      value,
+    );
+  } catch {
+    return value;
+  }
+}
+
 function tokenSet(
   value: string,
 ) {
@@ -210,7 +226,7 @@ function tokenSet(
   const tokens =
     segments
       .flatMap((segment) =>
-        decodeURIComponent(
+        safeDecodePathSegment(
           segment,
         )
           .toLowerCase()
