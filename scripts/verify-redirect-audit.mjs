@@ -146,7 +146,7 @@ const contentXml = `<?xml version="1.0" encoding="UTF-8"?>
   </url>
 </urlset>`;
 
-const fetchDocument =
+const fetchDocumentFixture =
   async ({
     url,
     preserveSearch,
@@ -361,6 +361,53 @@ const fetchDocument =
     );
   };
 
+let activeNonSitemapFetches =
+  0;
+
+let maxActiveNonSitemapFetches =
+  0;
+
+
+const fetchDocument =
+  async (
+    input,
+  ) => {
+    const tracked =
+      input.preserveSearch !==
+      true;
+
+    if (tracked) {
+      activeNonSitemapFetches +=
+        1;
+
+      maxActiveNonSitemapFetches =
+        Math.max(
+          maxActiveNonSitemapFetches,
+          activeNonSitemapFetches,
+        );
+
+      await new Promise(
+        (resolve) =>
+          setTimeout(
+            resolve,
+            15,
+          ),
+      );
+    }
+
+    try {
+      return await fetchDocumentFixture(
+        input,
+      );
+    } finally {
+      if (tracked) {
+        activeNonSitemapFetches -=
+          1;
+      }
+    }
+  };
+
+
 const result =
   await runRedirectAudit({
     primaryDomain:
@@ -369,6 +416,10 @@ const result =
       3,
     maxLinkChecks:
       10,
+    sourceConcurrency:
+      2,
+    linkConcurrency:
+      3,
     fetchDocument,
   });
 
@@ -493,6 +544,190 @@ assert.equal(
   1,
 );
 
+assert.equal(
+  result.sourceConcurrency,
+  2,
+);
+
+assert.equal(
+  result.linkConcurrency,
+  3,
+);
+
+assert.equal(
+  maxActiveNonSitemapFetches,
+  3,
+);
+
+assert.ok(
+  result.timings.sitemapMs >=
+    0,
+);
+
+assert.ok(
+  result.timings.sourcePagesMs >
+    0,
+);
+
+assert.ok(
+  result.timings.linkChecksMs >
+    0,
+);
+
+assert.ok(
+  result.timings.totalMs >=
+    result.timings.sourcePagesMs,
+);
+
+assert.ok(
+  result.timings.totalMs >=
+    result.timings.linkChecksMs,
+);
+
+assert.equal(
+  result.coverage.sitemapDocumentsTruncated,
+  false,
+);
+
+assert.equal(
+  result.coverage.sitemapUrlsTruncated,
+  false,
+);
+
+assert.equal(
+  result.coverage.sourcePagesTruncated,
+  false,
+);
+
+assert.equal(
+  result.coverage.internalLinksTruncated,
+  false,
+);
+
+assert.deepEqual(
+  result.brokenInternalLinks.map(
+    (item) =>
+      item.url,
+  ),
+  [
+    "https://example.com/products/widget-old",
+    "https://example.com/loop-a",
+    "https://example.com/gone",
+  ],
+);
+
+
+// ----------------------------------------------------------
+// Explicit coverage-limit tests.
+// ----------------------------------------------------------
+
+const documentsLimited =
+  await runRedirectAudit({
+    primaryDomain:
+      "example.com",
+    maxSitemapDocuments:
+      1,
+    maxSourcePages:
+      0,
+    maxLinkChecks:
+      0,
+    fetchDocument:
+      fetchDocumentFixture,
+  });
+
+assert.equal(
+  documentsLimited.coverage.sitemapDocumentsTruncated,
+  true,
+);
+
+
+const urlsLimited =
+  await runRedirectAudit({
+    primaryDomain:
+      "example.com",
+    maxSitemapUrls:
+      1,
+    maxSourcePages:
+      0,
+    maxLinkChecks:
+      0,
+    fetchDocument:
+      fetchDocumentFixture,
+  });
+
+assert.equal(
+  urlsLimited.coverage.sitemapUrlsTruncated,
+  true,
+);
+
+
+const sourcesLimited =
+  await runRedirectAudit({
+    primaryDomain:
+      "example.com",
+    maxSourcePages:
+      2,
+    maxLinkChecks:
+      0,
+    fetchDocument:
+      fetchDocumentFixture,
+  });
+
+assert.equal(
+  sourcesLimited.coverage.sourcePagesTruncated,
+  true,
+);
+
+
+const linksLimited =
+  await runRedirectAudit({
+    primaryDomain:
+      "example.com",
+    maxSourcePages:
+      3,
+    maxLinkChecks:
+      2,
+    fetchDocument:
+      fetchDocumentFixture,
+  });
+
+assert.equal(
+  linksLimited.coverage.internalLinksTruncated,
+  true,
+);
+
+
+// ----------------------------------------------------------
+// Invalid concurrency must fail closed.
+// ----------------------------------------------------------
+
+await assert.rejects(
+  () =>
+    runRedirectAudit({
+      primaryDomain:
+        "example.com",
+      sourceConcurrency:
+        0,
+      fetchDocument:
+        fetchDocumentFixture,
+    }),
+  /REDIRECT_AUDIT_INVALID_SOURCE_CONCURRENCY/,
+);
+
+await assert.rejects(
+  () =>
+    runRedirectAudit({
+      primaryDomain:
+        "example.com",
+      linkConcurrency:
+        0,
+      fetchDocument:
+        fetchDocumentFixture,
+    }),
+  /REDIRECT_AUDIT_INVALID_LINK_CONCURRENCY/,
+);
+
+
 const tooLargeBroken =
   result.brokenInternalLinks.find(
     (item) =>
@@ -532,6 +767,14 @@ console.log(
 
 console.log(
   "REDIRECT_AUDIT_UNVERIFIED_LINK_PASS",
+);
+
+console.log(
+  "REDIRECT_AUDIT_PERFORMANCE_COVERAGE_PASS",
+);
+
+console.log(
+  "REDIRECT_AUDIT_DETERMINISTIC_CONCURRENCY_PASS",
 );
 
 console.log(

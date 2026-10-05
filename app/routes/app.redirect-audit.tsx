@@ -380,6 +380,90 @@ export default function RedirectAudit() {
         )}
       </s-section>
 
+      <s-section heading="Performance & coverage">
+        {!result ? (
+          <s-paragraph>
+            Timing and coverage information
+            appears after an audit.
+          </s-paragraph>
+        ) : (
+          <s-stack
+            direction="block"
+            gap="base"
+          >
+            <s-unordered-list>
+              <s-list-item>
+                Total runtime:{" "}
+                {(
+                  result.timings.totalMs /
+                  1000
+                ).toFixed(2)}
+                {" s"}
+              </s-list-item>
+
+              <s-list-item>
+                Sitemap phase:{" "}
+                {(
+                  result.timings.sitemapMs /
+                  1000
+                ).toFixed(2)}
+                {" s"}
+              </s-list-item>
+
+              <s-list-item>
+                Source-page phase:{" "}
+                {(
+                  result.timings.sourcePagesMs /
+                  1000
+                ).toFixed(2)}
+                {" s · concurrency "}
+                {result.sourceConcurrency}
+              </s-list-item>
+
+              <s-list-item>
+                Link-check phase:{" "}
+                {(
+                  result.timings.linkChecksMs /
+                  1000
+                ).toFixed(2)}
+                {" s · concurrency "}
+                {result.linkConcurrency}
+              </s-list-item>
+            </s-unordered-list>
+
+            <s-unordered-list>
+              <s-list-item>
+                Sitemap document limit hit:{" "}
+                {result.coverage.sitemapDocumentsTruncated
+                  ? "yes"
+                  : "no"}
+              </s-list-item>
+
+              <s-list-item>
+                Sitemap URL limit hit:{" "}
+                {result.coverage.sitemapUrlsTruncated
+                  ? "yes"
+                  : "no"}
+              </s-list-item>
+
+              <s-list-item>
+                Source-page sample limited:{" "}
+                {result.coverage.sourcePagesTruncated
+                  ? "yes"
+                  : "no"}
+              </s-list-item>
+
+              <s-list-item>
+                Internal-link checks limited:{" "}
+                {result.coverage.internalLinksTruncated
+                  ? "yes"
+                  : "no"}
+              </s-list-item>
+            </s-unordered-list>
+          </s-stack>
+        )}
+      </s-section>
+
       <s-section heading="Redirect suggestions">
         {!result ? (
           <s-paragraph>
