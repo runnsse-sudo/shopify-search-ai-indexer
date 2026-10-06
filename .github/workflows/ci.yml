@@ -56,6 +56,9 @@ jobs:
       - name: Verify redirect audit
         run: npm run verify:redirect-audit
 
+      - name: Verify LLM visibility
+        run: npm run verify:llm-visibility
+
       - name: Verify schema storefront extension
         run: npm run verify:schema-storefront-extension
 
