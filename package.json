@@ -40,6 +40,8 @@
     "verify:sitemap-audit": "npm run build:sitemap-audit && node scripts/verify-sitemap-audit.mjs",
     "build:redirect-audit": "esbuild app/services/redirect-audit/redirect-audit.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/redirect-audit.mjs && esbuild app/services/redirect-audit/redirect-audit.server.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/redirect-audit-server.mjs",
     "verify:redirect-audit": "npm run build:redirect-audit && node scripts/verify-redirect-audit.mjs",
+    "build:llm-visibility": "esbuild app/services/llm-visibility/llm-visibility.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/llm-visibility.mjs && esbuild app/services/llm-visibility/llm-visibility.server.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/llm-visibility-server.mjs",
+    "verify:llm-visibility": "npm run build:llm-visibility && node scripts/verify-llm-visibility.mjs",
     "verify:schema-storefront-extension": "node scripts/verify-schema-storefront-extension.mjs",
     "build:storefront-settings": "esbuild app/services/storefront-settings.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/storefront-settings.mjs && esbuild app/services/storefront-settings.server.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/storefront-settings-server.mjs",
     "verify:storefront-settings": "npm run build:storefront-settings && node scripts/verify-storefront-settings.mjs",
