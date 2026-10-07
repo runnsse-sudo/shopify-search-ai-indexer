@@ -294,14 +294,14 @@ export default function LlmVisibility() {
       >
         <s-paragraph>
           This audit evaluates AI
-          crawler policy in robots.txt,
-          checks optional llms.txt
-          files, reuses the bounded
-          sitemap inventory for
-          canonical/noindex visibility,
-          and generates deterministic
-          unpublished llms.txt
-          previews.
+          crawler and user-triggered
+          fetcher policy, checks
+          optional llms.txt files,
+          reuses the bounded sitemap
+          inventory for canonical/noindex
+          visibility, and generates
+          deterministic unpublished
+          llms.txt previews.
         </s-paragraph>
 
         <s-unordered-list>
@@ -421,6 +421,24 @@ export default function LlmVisibility() {
                     .sampledPages
                 }
               />
+
+              <Metric
+                label="AI tokens audited"
+                value={
+                  result
+                    .aiAccessSummary
+                    .registeredTokens
+                }
+              />
+
+              <Metric
+                label="User-triggered fetchers"
+                value={
+                  result
+                    .aiAccessSummary
+                    .userTriggeredTokens
+                }
+              />
             </s-stack>
 
 
@@ -497,7 +515,7 @@ export default function LlmVisibility() {
 
 
       <s-section
-        heading="robots.txt & AI crawler policy"
+        heading="robots.txt & AI crawler/fetcher policy"
       >
         {!result ? (
           <s-paragraph>
@@ -559,6 +577,14 @@ export default function LlmVisibility() {
                       {crawler.vendor}
                       {" — "}
                       {crawler.purpose}
+                      {" — "}
+                      {crawler
+                        .userTriggered
+                        ? "USER_TRIGGERED"
+                        : "AUTOMATED_OR_CONTROL"}
+                      {" — robots semantics "}
+                      {crawler
+                        .robotsBehavior}
                       {" — root "}
                       {crawler.rootAccess}
                       {" — representative paths "}
@@ -583,10 +609,14 @@ export default function LlmVisibility() {
             <s-paragraph>
               Search visibility is
               scored separately from
-              training or generative-AI
-              policy choices. Blocking
-              a training crawler does
-              not reduce the score.
+              training, generative-AI
+              controls, and user-triggered
+              fetcher policy. ChatGPT-User,
+              Claude-User, and
+              Perplexity-User are shown
+              with vendor-specific robots
+              semantics and do not change
+              the search-readiness score.
             </s-paragraph>
           </s-stack>
         )}
@@ -766,6 +796,11 @@ export default function LlmVisibility() {
           <s-list-item>
             No Shopify scope
             changes.
+          </s-list-item>
+
+          <s-list-item>
+            No WAF/CDN allowlist
+            writes.
           </s-list-item>
 
           <s-list-item>

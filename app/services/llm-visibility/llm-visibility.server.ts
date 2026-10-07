@@ -20,6 +20,8 @@ import {
   calculateLlmVisibilityScore,
   evaluateRobotsAccess,
   parseRobotsTxt,
+  type AiCrawlerPurpose,
+  type AiRobotsBehavior,
   type LlmsDocumentAnalysis,
   type ParsedRobotsTxt,
 } from "./llm-visibility";
@@ -155,10 +157,17 @@ export type LlmVisibilityAuditResult = {
 
       vendor: string;
 
-      purpose: string;
+      purpose:
+        AiCrawlerPurpose;
 
       searchVisibilityRelevant:
         boolean;
+
+      userTriggered:
+        boolean;
+
+      robotsBehavior:
+        AiRobotsBehavior;
 
       explicitGroup:
         boolean;
@@ -184,6 +193,29 @@ export type LlmVisibilityAuditResult = {
             | "UNKNOWN";
         }>;
     }>;
+
+  aiAccessSummary: {
+    registeredTokens:
+      number;
+
+    userTriggeredTokens:
+      number;
+
+    searchCrawlers:
+      number;
+
+    trainingCrawlers:
+      number;
+
+    generativeControlTokens:
+      number;
+
+    userTriggeredRobotsHonored:
+      number;
+
+    userTriggeredRobotsNotGuaranteed:
+      number;
+  };
 
   sitemap: {
     rootSitemapUrl:
@@ -1602,6 +1634,14 @@ export async function runLlmVisibilityAudit(
             crawler
               .searchVisibilityRelevant,
 
+          userTriggered:
+            crawler
+              .userTriggered,
+
+          robotsBehavior:
+            crawler
+              .robotsBehavior,
+
           explicitGroup,
 
           wildcardFallback,
@@ -1948,7 +1988,7 @@ export async function runLlmVisibilityAudit(
       ),
 
     scoreNote:
-      "Heuristic technical readiness score only. Training-crawler opt-in or opt-out does not reduce this score.",
+      "Heuristic technical readiness score only. Training, generative-control, and user-triggered fetcher policy choices do not reduce this score.",
 
     representativePaths:
       [
@@ -1996,6 +2036,71 @@ export async function runLlmVisibilityAudit(
 
     crawlers:
       crawlerResults,
+
+    aiAccessSummary: {
+      registeredTokens:
+        crawlerResults.length,
+
+      userTriggeredTokens:
+        crawlerResults.filter(
+          (
+            crawler,
+          ) =>
+            crawler
+              .userTriggered,
+        ).length,
+
+      searchCrawlers:
+        crawlerResults.filter(
+          (
+            crawler,
+          ) =>
+            crawler.purpose ===
+            "SEARCH",
+        ).length,
+
+      trainingCrawlers:
+        crawlerResults.filter(
+          (
+            crawler,
+          ) =>
+            crawler.purpose ===
+            "TRAINING",
+        ).length,
+
+      generativeControlTokens:
+        crawlerResults.filter(
+          (
+            crawler,
+          ) =>
+            crawler.purpose ===
+            "GENERATIVE_AI_CONTROL",
+        ).length,
+
+      userTriggeredRobotsHonored:
+        crawlerResults.filter(
+          (
+            crawler,
+          ) =>
+            crawler
+              .userTriggered &&
+            crawler
+              .robotsBehavior ===
+              "HONORS_ROBOTS",
+        ).length,
+
+      userTriggeredRobotsNotGuaranteed:
+        crawlerResults.filter(
+          (
+            crawler,
+          ) =>
+            crawler
+              .userTriggered &&
+            crawler
+              .robotsBehavior !==
+              "HONORS_ROBOTS",
+        ).length,
+    },
 
     sitemap: {
       rootSitemapUrl:

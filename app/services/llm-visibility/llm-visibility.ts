@@ -1,13 +1,22 @@
 export type AiCrawlerPurpose =
   | "SEARCH"
   | "TRAINING"
-  | "GENERATIVE_AI_CONTROL";
+  | "GENERATIVE_AI_CONTROL"
+  | "USER_TRIGGERED_FETCH";
+
+export type AiRobotsBehavior =
+  | "HONORS_ROBOTS"
+  | "MAY_NOT_APPLY"
+  | "GENERALLY_IGNORES_ROBOTS"
+  | "CONTROL_TOKEN";
 
 export type AiCrawlerDefinition = {
   token: string;
   vendor: string;
   purpose: AiCrawlerPurpose;
   searchVisibilityRelevant: boolean;
+  userTriggered: boolean;
+  robotsBehavior: AiRobotsBehavior;
 };
 
 export const AI_CRAWLERS:
@@ -17,30 +26,64 @@ export const AI_CRAWLERS:
       vendor: "OpenAI",
       purpose: "SEARCH",
       searchVisibilityRelevant: true,
+      userTriggered: false,
+      robotsBehavior: "HONORS_ROBOTS",
+    },
+    {
+      token: "ChatGPT-User",
+      vendor: "OpenAI",
+      purpose: "USER_TRIGGERED_FETCH",
+      searchVisibilityRelevant: false,
+      userTriggered: true,
+      robotsBehavior: "MAY_NOT_APPLY",
     },
     {
       token: "GPTBot",
       vendor: "OpenAI",
       purpose: "TRAINING",
       searchVisibilityRelevant: false,
+      userTriggered: false,
+      robotsBehavior: "HONORS_ROBOTS",
     },
     {
       token: "Claude-SearchBot",
       vendor: "Anthropic",
       purpose: "SEARCH",
       searchVisibilityRelevant: true,
+      userTriggered: false,
+      robotsBehavior: "HONORS_ROBOTS",
+    },
+    {
+      token: "Claude-User",
+      vendor: "Anthropic",
+      purpose: "USER_TRIGGERED_FETCH",
+      searchVisibilityRelevant: false,
+      userTriggered: true,
+      robotsBehavior: "HONORS_ROBOTS",
     },
     {
       token: "ClaudeBot",
       vendor: "Anthropic",
       purpose: "TRAINING",
       searchVisibilityRelevant: false,
+      userTriggered: false,
+      robotsBehavior: "HONORS_ROBOTS",
     },
     {
       token: "PerplexityBot",
       vendor: "Perplexity",
       purpose: "SEARCH",
       searchVisibilityRelevant: true,
+      userTriggered: false,
+      robotsBehavior: "HONORS_ROBOTS",
+    },
+    {
+      token: "Perplexity-User",
+      vendor: "Perplexity",
+      purpose: "USER_TRIGGERED_FETCH",
+      searchVisibilityRelevant: false,
+      userTriggered: true,
+      robotsBehavior: "GENERALLY_IGNORES_ROBOTS",
     },
     {
       token: "Google-Extended",
@@ -48,6 +91,8 @@ export const AI_CRAWLERS:
       purpose:
         "GENERATIVE_AI_CONTROL",
       searchVisibilityRelevant: false,
+      userTriggered: false,
+      robotsBehavior: "CONTROL_TOKEN",
     },
   ];
 
