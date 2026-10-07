@@ -28,12 +28,74 @@ assert.deepEqual(
   crawlerTokens,
   [
     "OAI-SearchBot",
+    "ChatGPT-User",
     "GPTBot",
     "Claude-SearchBot",
+    "Claude-User",
     "ClaudeBot",
     "PerplexityBot",
+    "Perplexity-User",
     "Google-Extended",
   ],
+);
+
+
+const chatGptUserDefinition =
+  AI_CRAWLERS.find(
+    (
+      crawler,
+    ) =>
+      crawler.token ===
+      "ChatGPT-User",
+  );
+
+const claudeUserDefinition =
+  AI_CRAWLERS.find(
+    (
+      crawler,
+    ) =>
+      crawler.token ===
+      "Claude-User",
+  );
+
+const perplexityUserDefinition =
+  AI_CRAWLERS.find(
+    (
+      crawler,
+    ) =>
+      crawler.token ===
+      "Perplexity-User",
+  );
+
+
+assert.equal(
+  chatGptUserDefinition
+    ?.purpose,
+  "USER_TRIGGERED_FETCH",
+);
+
+assert.equal(
+  chatGptUserDefinition
+    ?.robotsBehavior,
+  "MAY_NOT_APPLY",
+);
+
+assert.equal(
+  chatGptUserDefinition
+    ?.searchVisibilityRelevant,
+  false,
+);
+
+assert.equal(
+  claudeUserDefinition
+    ?.robotsBehavior,
+  "HONORS_ROBOTS",
+);
+
+assert.equal(
+  perplexityUserDefinition
+    ?.robotsBehavior,
+  "GENERALLY_IGNORES_ROBOTS",
 );
 
 
@@ -47,11 +109,20 @@ User-agent: OAI-SearchBot
 Allow: /
 Disallow: /private
 
+User-agent: ChatGPT-User
+Disallow: /private
+
 User-agent: Claude-SearchBot
+Allow: /
+
+User-agent: Claude-User
 Allow: /
 
 User-agent: PerplexityBot
 Allow: /
+
+User-agent: Perplexity-User
+Disallow: /
 
 User-agent: GPTBot
 Disallow: /
@@ -75,7 +146,7 @@ const parsedRobots =
 assert.equal(
   parsedRobots
     .groups.length,
-  7,
+  10,
 );
 
 
@@ -677,6 +748,104 @@ assert.equal(
 );
 
 
+const chatGptUser =
+  result.crawlers.find(
+    (
+      crawler,
+    ) =>
+      crawler.token ===
+      "ChatGPT-User",
+  );
+
+const claudeUser =
+  result.crawlers.find(
+    (
+      crawler,
+    ) =>
+      crawler.token ===
+      "Claude-User",
+  );
+
+const perplexityUser =
+  result.crawlers.find(
+    (
+      crawler,
+    ) =>
+      crawler.token ===
+      "Perplexity-User",
+  );
+
+
+assert.equal(
+  chatGptUser
+    ?.userTriggered,
+  true,
+);
+
+assert.equal(
+  chatGptUser
+    ?.robotsBehavior,
+  "MAY_NOT_APPLY",
+);
+
+assert.equal(
+  chatGptUser
+    ?.rootAccess,
+  "ALLOW",
+);
+
+assert.equal(
+  claudeUser
+    ?.robotsBehavior,
+  "HONORS_ROBOTS",
+);
+
+assert.equal(
+  claudeUser
+    ?.rootAccess,
+  "ALLOW",
+);
+
+assert.equal(
+  perplexityUser
+    ?.robotsBehavior,
+  "GENERALLY_IGNORES_ROBOTS",
+);
+
+assert.equal(
+  perplexityUser
+    ?.rootAccess,
+  "DISALLOW",
+);
+
+
+assert.deepEqual(
+  result.aiAccessSummary,
+  {
+    registeredTokens:
+      9,
+
+    userTriggeredTokens:
+      3,
+
+    searchCrawlers:
+      3,
+
+    trainingCrawlers:
+      2,
+
+    generativeControlTokens:
+      1,
+
+    userTriggeredRobotsHonored:
+      1,
+
+    userTriggeredRobotsNotGuaranteed:
+      2,
+  },
+);
+
+
 const googleExtended =
   result.crawlers.find(
     (
@@ -715,6 +884,22 @@ assert.equal(
       ) =>
         item.code.includes(
           "GPTBOT",
+        ),
+    ),
+  false,
+);
+
+assert.equal(
+  result.recommendations
+    .some(
+      (
+        item,
+      ) =>
+        item.code.includes(
+          "CHATGPT_USER",
+        ) ||
+        item.code.includes(
+          "PERPLEXITY_USER",
         ),
     ),
   false,
@@ -793,6 +978,10 @@ console.log(
 
 console.log(
   "LLM_VISIBILITY_SECURITY_INPUT_PASS",
+);
+
+console.log(
+  "LLM_VISIBILITY_USER_TRIGGERED_FETCHERS_PASS",
 );
 
 console.log(
