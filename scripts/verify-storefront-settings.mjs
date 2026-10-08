@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  getFormDeliveryDays,
   createDefaultStorefrontSettings,
   normalizeStorefrontSettings,
   stringifyStorefrontSettings,
@@ -54,12 +55,12 @@ assert.equal(
 
 assert.equal(
   defaults.shipping.minimumDeliveryDays,
-  1,
+  null,
 );
 
 assert.equal(
   defaults.shipping.maximumDeliveryDays,
-  3,
+  null,
 );
 
 assert.equal(
@@ -780,3 +781,112 @@ console.log(
     2,
   ),
 );
+// Explicit unknowns round-trip without coercion; old numeric V1 remains readable.
+for (const [min, max] of [
+  [null, null],
+  [1, 3],
+  [3, 6],
+  [0, 0],
+]) {
+  const value = {
+    ...defaults,
+    shipping: {
+      ...defaults.shipping,
+      minimumDeliveryDays: min,
+      maximumDeliveryDays: max,
+    },
+  };
+  assert.deepEqual(
+    JSON.parse(stringifyStorefrontSettings(value)),
+    normalizeStorefrontSettings(value),
+  );
+}
+for (const [min, max] of [
+  [null, 3],
+  [1, null],
+  [-1, 3],
+  [1, 366],
+  [5, 2],
+  [1.5, 3],
+  ["1", 3],
+  [undefined, undefined],
+  ["", ""],
+  [false, false],
+]) {
+  assert.throws(() =>
+    normalizeStorefrontSettings({
+      ...defaults,
+      shipping: {
+        ...defaults.shipping,
+        minimumDeliveryDays: min,
+        maximumDeliveryDays: max,
+      },
+    }),
+  );
+}
+for (const [raw, expected] of [
+  ["", null],
+  ["  ", null],
+  ["3", 3],
+  ["0", 0],
+]) {
+  const form = new FormData();
+  form.set("days", raw);
+  assert.equal(getFormDeliveryDays(form, "days"), expected);
+}
+for (const raw of ["bad", "Infinity"]) {
+  const form = new FormData();
+  form.set("days", raw);
+  assert.throws(() => getFormDeliveryDays(form, "days"));
+}
+assert.throws(() => getFormDeliveryDays(new FormData(), "days"));
+const blankForm = new FormData();
+blankForm.set("min", "");
+blankForm.set("max", "");
+assert.equal(
+  normalizeStorefrontSettings({
+    ...defaults,
+    shipping: {
+      ...defaults.shipping,
+      minimumDeliveryDays: getFormDeliveryDays(blankForm, "min"),
+      maximumDeliveryDays: getFormDeliveryDays(blankForm, "max"),
+    },
+  }).shipping.minimumDeliveryDays,
+  null,
+);
+assert.equal(saved.config.shipping.minimumDeliveryDays, null);
+assert.equal(saved.config.shipping.maximumDeliveryDays, null);
+const unknownRead = await getStorefrontSettings({
+  async graphql() {
+    return jsonResponse({
+      data: {
+        currentAppInstallation: {
+          id: "gid://shopify/AppInstallation/3",
+          metafield: {
+            namespace: "runn_storefront",
+            key: "config_v1",
+            type: "json",
+            value: stringifyStorefrontSettings(defaults),
+            compareDigest: "unknown-digest",
+          },
+        },
+      },
+    });
+  },
+});
+assert.equal(unknownRead.config.shipping.minimumDeliveryDays, null);
+assert.equal(unknownRead.config.shipping.maximumDeliveryDays, null);
+
+const fractionalForm = new FormData();
+fractionalForm.set("days", "1.5");
+assert.throws(() =>
+  normalizeStorefrontSettings({
+    ...defaults,
+    shipping: {
+      ...defaults.shipping,
+      minimumDeliveryDays: getFormDeliveryDays(fractionalForm, "days"),
+      maximumDeliveryDays: 3,
+    },
+  }),
+);
+console.log("DELIVERY_UNKNOWN_AND_FORM_REGRESSIONS=PASS");

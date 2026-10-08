@@ -1,3 +1,4 @@
+import { getFormDeliveryDays } from "../services/storefront-settings";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
@@ -188,13 +189,13 @@ export const action = async ({
               ),
 
             minimumDeliveryDays:
-              getFormNumber(
+              getFormDeliveryDays(
                 formData,
                 "shipping.minimumDeliveryDays",
               ),
 
             maximumDeliveryDays:
-              getFormNumber(
+              getFormDeliveryDays(
                 formData,
                 "shipping.maximumDeliveryDays",
               ),
@@ -395,9 +396,9 @@ export default function StorefrontSettings() {
         </s-unordered-list>
 
         <s-paragraph>
-          This step stores configuration only. Storefront
-          schema output is not changed until the schema
-          extension integration is completed separately.
+          Saving writes the app-owned config_v1 metafield. Already-active Runn
+          schema blocks may use saved values immediately. Save only verified
+          merchant facts.
         </s-paragraph>
       </s-section>
 
@@ -523,27 +524,32 @@ export default function StorefrontSettings() {
             }
           />
 
+          <s-paragraph>
+            Leave both delivery fields blank for unknown/unset timing. These
+            values are not currently published into structured data. Do not enter
+            warehouse lead time or dispatch time as total customer delivery timing.
+          </s-paragraph>
           <TextField
-            label="Minimum delivery days"
+            label="Minimum total customer delivery days (optional)"
             name="shipping.minimumDeliveryDays"
             type="number"
             step="1"
             min={0}
             max={365}
             defaultValue={
-              config.shipping.minimumDeliveryDays
+              config.shipping.minimumDeliveryDays ?? ""
             }
           />
 
           <TextField
-            label="Maximum delivery days"
+            label="Maximum total customer delivery days (optional)"
             name="shipping.maximumDeliveryDays"
             type="number"
             step="1"
             min={0}
             max={365}
             defaultValue={
-              config.shipping.maximumDeliveryDays
+              config.shipping.maximumDeliveryDays ?? ""
             }
           />
 

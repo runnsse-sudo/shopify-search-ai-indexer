@@ -28,8 +28,8 @@ export type StorefrontSettings = {
     rate: number;
     currency: string;
     label: string;
-    minimumDeliveryDays: number;
-    maximumDeliveryDays: number;
+    minimumDeliveryDays: number | null;
+    maximumDeliveryDays: number | null;
     policyUrl: string;
   };
 
@@ -260,8 +260,8 @@ export function createDefaultStorefrontSettings():
       rate: 49,
       currency: "SEK",
       label: "Standardfrakt",
-      minimumDeliveryDays: 1,
-      maximumDeliveryDays: 3,
+      minimumDeliveryDays: null,
+      maximumDeliveryDays: null,
       policyUrl: "",
     },
 
@@ -352,33 +352,21 @@ export function normalizeStorefrontSettings(
     );
   }
 
-  const minimumDeliveryDays =
-    requireIntegerRange(
-      requireNumber(
-        shipping,
-        "minimumDeliveryDays",
-        "shipping",
-      ),
-      0,
-      365,
-      "shipping.minimumDeliveryDays",
-    );
-
-  const maximumDeliveryDays =
-    requireIntegerRange(
-      requireNumber(
-        shipping,
-        "maximumDeliveryDays",
-        "shipping",
-      ),
-      0,
-      365,
-      "shipping.maximumDeliveryDays",
-    );
-
+  const minimumDeliveryDays = requireNullableDeliveryDays(
+    shipping,
+    "minimumDeliveryDays",
+  );
+  const maximumDeliveryDays = requireNullableDeliveryDays(
+    shipping,
+    "maximumDeliveryDays",
+  );
+  if ((minimumDeliveryDays === null) !== (maximumDeliveryDays === null)) {
+    throw new Error("Delivery timing must be both null or both numeric");
+  }
   if (
-    minimumDeliveryDays >
-    maximumDeliveryDays
+    minimumDeliveryDays !== null &&
+    maximumDeliveryDays !== null &&
+    minimumDeliveryDays > maximumDeliveryDays
   ) {
     throw new Error(
       "shipping.minimumDeliveryDays cannot exceed shipping.maximumDeliveryDays",
@@ -606,4 +594,30 @@ export function stringifyStorefrontSettings(
       input,
     ),
   );
+}
+function requireNullableDeliveryDays(
+  record: JsonRecord,
+  key: string,
+): number | null {
+  if (record[key] === null) return null;
+  return requireIntegerRange(
+    requireNumber(record, key, "shipping"),
+    0,
+    365,
+    "shipping." + key,
+  );
+}
+
+/** Form-only blank handling; persisted JSON must contain explicit nulls. */
+export function getFormDeliveryDays(
+  formData: FormData,
+  key: string,
+): number | null {
+  const raw = formData.get(key);
+  if (typeof raw !== "string") throw new Error(key + " must be a form string");
+  if (!raw.trim()) return null;
+  const value = Number(raw.trim());
+  if (!Number.isFinite(value))
+    throw new Error(key + " must be a finite number");
+  return value;
 }

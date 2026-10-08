@@ -298,49 +298,170 @@ for (const barcode of [
     ),
   );
 }
-const corruptConfigs = [
-  { ...config, identity: null },
-  { ...config, identity: { ...config.identity, founder: 123 } },
-  {
-    ...config,
-    identity: { ...config.identity, facebookUrl: "javascript:bad" },
-  },
+// Structural corruption fails both gates; irrelevant fields do not.
+for (const value of [
   undefined,
   null,
   { version: 2 },
   {},
-  { ...config, shipping: { ...config.shipping, enabled: "true" } },
-  { ...config, shipping: { ...config.shipping, rate: "7.5" } },
-  { ...config, shipping: { ...config.shipping, rate: -1 } },
-  { ...config, returns: { ...config.returns, periodDays: 0 } },
-  { ...config, returns: { ...config.returns, periodDays: 1.5 } },
-  { ...config, returns: { ...config.returns, method: "unknown" } },
-  { ...config, returns: { ...config.returns, policyUrl: "//evil.example" } },
-  { ...config, shipping: { ...config.shipping, country: "123" } },
-];
-for (const value of corruptConfigs) {
-  const app = appWith(value);
-  for (const path of [
-    "/pages/leveransinfo",
-    "/policies/shipping-policy",
-    "/policies/refund-policy",
-  ])
+  { ...config, shipping: null },
+  { ...config, returns: [] },
+]) {
+  for (const path of ["/policies/shipping-policy", "/policies/refund-policy"])
     assert.equal(
-      (await render("merchant-policy-schema", { app, request: { path } })).data
-        .length,
+      (
+        await render("merchant-policy-schema", {
+          app: appWith(value),
+          request: { path },
+        })
+      ).data.length,
       0,
-      "invalid config must fail closed",
     );
-  const result = await render("product-schema", { app });
-  assert.ok(
-    !types(result).MerchantReturnPolicy && !types(result).OfferShippingDetails,
+}
+for (const pair of [
+  [null, null],
+  [1, 3],
+  [3, 6],
+  [0, 0],
+  [null, 3],
+  [3, null],
+  [1.5, 3],
+  [-1, 3],
+  [1, 366],
+  [5, 2],
+  ["1", "3"],
+  [undefined, undefined],
+]) {
+  const value = {
+    ...config,
+    shipping: {
+      ...config.shipping,
+      minimumDeliveryDays: pair[0],
+      maximumDeliveryDays: pair[1],
+    },
+  };
+  for (const [path, type] of [
+    ["/policies/shipping-policy", "ShippingService"],
+    ["/policies/refund-policy", "MerchantReturnPolicy"],
+  ]) {
+    const result = await render("merchant-policy-schema", {
+      app: appWith(value),
+      request: { path },
+    });
+    assert.equal(types(result)[type], 1);
+    assert.ok(
+      !/"(?:handlingTime|transitTime|deliveryTime|minimumDeliveryDays|maximumDeliveryDays)"/.test(
+        result.html,
+      ),
+    );
+  }
+}
+for (const bad of [
+  { enabled: "true" },
+  { enabled: 1 },
+  { rate: "7.5" },
+  { rate: -1 },
+  { rate: 1000001 },
+  { country: "123" },
+  { country: ["DE"] },
+  { label: "" },
+  { currency: "12" },
+]) {
+  const app = appWith({ ...config, shipping: { ...config.shipping, ...bad } });
+  assert.equal(
+    (
+      await render("merchant-policy-schema", {
+        app,
+        request: { path: "/policies/shipping-policy" },
+      })
+    ).data.length,
+    0,
   );
-  const identity = await render("site-identity-schema", { ...home, app });
-  assert.equal(types(identity).WebSite, 1);
-  assert.ok(
-    !types(identity).MerchantReturnPolicy && !types(identity).ShippingService,
+  assert.equal(
+    types(
+      await render("merchant-policy-schema", {
+        app,
+        request: { path: "/policies/refund-policy" },
+      }),
+    ).MerchantReturnPolicy,
+    1,
+  );
+  assert.equal(
+    types(await render("product-schema", { app })).MerchantReturnPolicy,
+    1,
+  );
+  assert.equal(
+    types(await render("site-identity-schema", { ...home, app }))
+      .MerchantReturnPolicy,
+    1,
   );
 }
+for (const bad of [
+  { enabled: "true" },
+  { periodDays: 0 },
+  { periodDays: 1.5 },
+  { method: "unknown" },
+  { fees: "unknown" },
+  { refundType: "unknown" },
+  { country: "123" },
+  { policyUrl: "//evil.example" },
+]) {
+  const app = appWith({ ...config, returns: { ...config.returns, ...bad } });
+  assert.equal(
+    (
+      await render("merchant-policy-schema", {
+        app,
+        request: { path: "/policies/refund-policy" },
+      })
+    ).data.length,
+    0,
+  );
+  assert.equal(
+    types(
+      await render("merchant-policy-schema", {
+        app,
+        request: { path: "/policies/shipping-policy" },
+      }),
+    ).ShippingService,
+    1,
+  );
+  assert.equal(
+    types(await render("product-schema", { app })).OfferShippingDetails,
+    1,
+  );
+  assert.equal(
+    types(await render("site-identity-schema", { ...home, app }))
+      .ShippingService,
+    1,
+  );
+}
+for (const identity of [
+  undefined,
+  null,
+  { founder: 123 },
+  { facebookUrl: "javascript:bad" },
+]) {
+  const result = await render("merchant-policy-schema", {
+    app: appWith({ ...config, identity }),
+    request: { path: "/policies/refund-policy" },
+  });
+  assert.equal(types(result).MerchantReturnPolicy, 1);
+}
+const legacyShipping = await render("merchant-policy-schema", {
+  request: { path: "/policies/shipping-policy" },
+});
+const unknownShipping = await render("merchant-policy-schema", {
+  request: { path: "/policies/shipping-policy" },
+  app: appWith({
+    ...config,
+    shipping: {
+      ...config.shipping,
+      minimumDeliveryDays: null,
+      maximumDeliveryDays: null,
+    },
+  }),
+});
+assert.deepEqual(legacyShipping.data, unknownShipping.data);
 for (const path of ["/pages/leveransinfo", "/policies/shipping-policy"])
   assert.equal(
     types(await render("merchant-policy-schema", { request: { path } }))
@@ -948,6 +1069,38 @@ for (const source of Object.values(sources)) {
 }
 assert.ok(sources["product-schema.liquid"].includes("cart.currency.iso_code"));
 assert.ok(!sources["product-schema.liquid"].includes("shop.currency"));
+
+// Timing validation is available independently, never a publication prerequisite.
+for (const [min, max, expected] of [
+  [null, null, true],
+  [1, 3, true],
+  [3, 6, true],
+  [0, 0, true],
+  [null, 3, false],
+  [3, null, false],
+  [1.5, 3, false],
+  [-1, 3, false],
+  [1, 366, false],
+  [5, 2, false],
+  ["1", "3", false],
+  [undefined, undefined, false],
+]) {
+  const shipping = {
+    ...config.shipping,
+    minimumDeliveryDays: min,
+    maximumDeliveryDays: max,
+  };
+  if (min === undefined) {
+    delete shipping.minimumDeliveryDays;
+    delete shipping.maximumDeliveryDays;
+  }
+  const output = await liquid.renderFile("runn-schema-config-valid", {
+    config: { ...config, shipping },
+    kind: "timing",
+  });
+  assert.equal(output.trim() === "true", expected);
+}
+
 console.log("PHASE_G_STRUCTURED_DATA_VERIFICATION=PASS");
 console.log("ACTUAL_LIQUID_RENDER_CASES=" + renderCount);
 console.log("RETIREMENT_FIXTURES=PASS; PRODUCTION_ENABLEMENT_AUTHORIZED=NO");
