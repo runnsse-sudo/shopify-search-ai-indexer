@@ -1,5 +1,5 @@
 import prisma from "../app/db.server";
-import { isIndexNowLifecycleReadyWithClient } from "../app/services/provider-lifecycle";
+import { isIndexNowLifecycleReady, isIndexNowLifecycleReadyWithClient } from "../app/services/provider-lifecycle";
 import { materializeProductPushPlanWithClient } from "../app/services/index-provider-materialization";
 import { planProductPush } from "../app/services/index-provider-plan";
 import {
@@ -77,7 +77,7 @@ async function main() {
     );
   }
 
-  if (!await isIndexNowLifecycleReadyWithClient(prisma, shop.id)) {
+  if (!await isIndexNowLifecycleReady(prisma, shop.id)) {
     log("provider_materialization_lifecycle_not_ready");
     return;
   }

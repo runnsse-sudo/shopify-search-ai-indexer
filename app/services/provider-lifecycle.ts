@@ -1,5 +1,6 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { indexNowShopReadinessReason } from "./indexnow-shop-config.ts";
+import { runSerializableTransactionWithRetry } from "./serializable-transaction-retry.server.ts";
 
 export async function hasOfflineInstallationWithClient(
   client: Prisma.TransactionClient,
@@ -13,6 +14,19 @@ export async function hasOfflineInstallationWithClient(
   );
 }
 
+// Root callers must establish one snapshot before evaluating config and Session.
+export async function isIndexNowLifecycleReady(
+  client: PrismaClient,
+  shopId: string,
+  expectedHost?: string,
+) {
+  return runSerializableTransactionWithRetry(() => client.$transaction(
+    (tx) => isIndexNowLifecycleReadyWithClient(tx, shopId, expectedHost),
+    { isolationLevel: "Serializable" },
+  ));
+}
+
+// Requires an existing Serializable transaction; never opens a nested transaction.
 export async function isIndexNowLifecycleReadyWithClient(
   client: Prisma.TransactionClient,
   shopId: string,

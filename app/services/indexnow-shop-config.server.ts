@@ -1,5 +1,5 @@
 import prisma from "../db.server";
-import { hasOfflineInstallationWithClient, isIndexNowLifecycleReadyWithClient, listInstalledIndexNowConfigsWithClient } from "./provider-lifecycle";
+import { hasOfflineInstallationWithClient, listInstalledIndexNowConfigsWithClient } from "./provider-lifecycle";
 import { PublicFetchError, sanitizeOwnershipError, type PublicResolver } from "./public-fetch";
 import { runSerializableTransactionWithRetry } from "./serializable-transaction-retry.server";
 
@@ -600,7 +600,10 @@ export async function setIndexNowShopEnabled(
 export async function listReadyIndexNowShopsForMaterialization(
   limit: number,
 ) {
-  const configs = await listInstalledIndexNowConfigsWithClient(prisma, limit, "materializationLastRunAt");
+  const configs = await runSerializableTransactionWithRetry(() => prisma.$transaction(
+    (tx) => listInstalledIndexNowConfigsWithClient(tx, limit, "materializationLastRunAt"),
+    { isolationLevel: "Serializable" },
+  ));
 
   const ready = [];
 
@@ -635,7 +638,10 @@ export async function listReadyIndexNowShopsForMaterialization(
 export async function listReadyIndexNowShopsForExecution(
   limit: number,
 ) {
-  const configs = await listInstalledIndexNowConfigsWithClient(prisma, limit, "indexNowLastRunAt");
+  const configs = await runSerializableTransactionWithRetry(() => prisma.$transaction(
+    (tx) => listInstalledIndexNowConfigsWithClient(tx, limit, "indexNowLastRunAt"),
+    { isolationLevel: "Serializable" },
+  ));
 
   const ready = [];
 
@@ -670,60 +676,62 @@ export async function getReadyIndexNowRuntimeConfig(
     Record<string, string | undefined> =
       process.env,
 ) {
-  const config =
-    await prisma.shopProviderConfig.findUnique({
-      where: {
-        shopId,
-      },
+  return runSerializableTransactionWithRetry(() => prisma.$transaction(async (tx) => {
+    const config =
+      await tx.shopProviderConfig.findUnique({
+        where: {
+          shopId,
+        },
 
-      include: {
-        shop: {
-          select: {
-            id: true,
-            domain: true,
-            primaryDomain: true,
+        include: {
+          shop: {
+            select: {
+              id: true,
+              domain: true,
+              primaryDomain: true,
+            },
           },
         },
-      },
-    });
+      });
 
-  if (!config) {
-    return null;
-  }
+    if (!config) {
+      return null;
+    }
 
-  if (
-    readinessReason(
-      config.shop,
-      config,
-    ) !== null
-  ) {
-    return null;
-  }
+    if (
+      readinessReason(
+        config.shop,
+        config,
+      ) !== null
+    ) {
+      return null;
+    }
 
-  if (!await isIndexNowLifecycleReadyWithClient(prisma, shopId)) return null;
+    if (!await hasOfflineInstallationWithClient(tx, config.shop.domain)) return null;
 
-  const payload =
-    decryptPayload(
-      config,
-      env,
-    );
+    const payload =
+      decryptPayload(
+        config,
+        env,
+      );
 
-  return {
-    shopId:
-      config.shop.id,
+    return {
+      shopId:
+        config.shop.id,
 
-    domain:
-      config.shop.domain,
+      domain:
+        config.shop.domain,
 
-    allowedHost:
-      payload.allowedHost,
+      allowedHost:
+        payload.allowedHost,
 
-    key:
-      payload.key,
+      key:
+        payload.key,
 
-    keyLocation:
-      payload.keyLocation,
-  };
+      keyLocation:
+        payload.keyLocation,
+    };
+  }, { isolationLevel: "Serializable" }));
 }
 
 export async function markIndexNowMaterializationRun(
