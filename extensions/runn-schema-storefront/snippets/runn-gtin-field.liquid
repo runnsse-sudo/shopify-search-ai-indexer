@@ -1,0 +1,21 @@
+{% doc %}
+  Emits a GTIN field only for numeric GS1 lengths with a valid check digit.
+  @param {string} barcode - Shopify variant barcode
+{% enddoc %}
+{%- assign gtin = barcode | strip -%}
+{%- assign non_digits = gtin | remove: '0' | remove: '1' | remove: '2' | remove: '3' | remove: '4' | remove: '5' | remove: '6' | remove: '7' | remove: '8' | remove: '9' -%}
+{%- assign length = gtin.size -%}
+{%- if non_digits == blank and gtin != blank -%}
+  {%- if length == 8 or length == 12 or length == 13 or length == 14 -%}
+    {%- assign digits = gtin | split: '' | reverse -%}
+    {%- assign sum = 0 -%}
+    {%- for digit in digits -%}
+      {%- assign parity = forloop.index0 | modulo: 2 -%}
+      {%- if parity == 1 -%}{%- assign weighted = digit | times: 3 -%}
+      {%- else -%}{%- assign weighted = digit | plus: 0 -%}{%- endif -%}
+      {%- assign sum = sum | plus: weighted -%}
+    {%- endfor -%}
+    {%- assign remainder = sum | modulo: 10 -%}
+    {%- if remainder == 0 -%}, "gtin{{ length }}": {{ gtin | json }}{%- endif -%}
+  {%- endif -%}
+{%- endif -%}

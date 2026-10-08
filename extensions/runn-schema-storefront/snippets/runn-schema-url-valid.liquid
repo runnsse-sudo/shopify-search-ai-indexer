@@ -1,0 +1,47 @@
+{% doc %}
+  Checks optional HTTP(S) DNS URLs or store-relative paths.
+  Ports, credentials, IP literals and control characters fail closed in V1.
+  @param {string} value - Configured URL
+{% enddoc %}
+{%- assign url_text = value | strip -%}
+{%- assign url_json = value | json | slice: 0, 1 -%}
+{%- assign encoded = value | json -%}
+{%- capture escapes -%}\u00,\t,\r,\n,\b,\f{%- endcapture -%}
+{%- assign escapes = escapes | split: ',' -%}
+{%- assign safe = true -%}
+{%- for escape in escapes -%}
+  {%- if encoded contains escape -%}{%- assign safe = false -%}{%- endif -%}
+{%- endfor -%}
+{%- assign url_prefix = url_text | slice: 0, 2 -%}
+{%- assign url_first = url_text | slice: 0, 1 -%}
+{%- assign url_http = url_text | slice: 0, 7 -%}
+{%- assign url_https = url_text | slice: 0, 8 -%}
+{%- assign url_clean = url_text | strip_newlines -%}
+{%- capture backslash -%}\{%- endcapture -%}
+{%- if url_text.size > 2048 -%}{%- assign safe = false -%}{%- endif -%}
+{%- if url_json == '"' and url_clean == url_text and safe -%}
+  {%- unless url_text contains ' ' or url_text contains backslash -%}
+    {%- if url_text == blank -%}true
+    {%- elsif url_first == '/' and url_prefix != '//' -%}true
+    {%- elsif url_http == 'http://' or url_https == 'https://' -%}
+      {%- if url_https == 'https://' -%}{%- assign url_host_path = url_text | remove_first: 'https://' -%}
+      {%- else -%}{%- assign url_host_path = url_text | remove_first: 'http://' -%}{%- endif -%}
+      {%- assign url_host = url_host_path | split: '/' | first -%}
+      {%- assign host = url_host | downcase -%}
+      {%- assign residue = host | remove: 'a' | remove: 'b' | remove: 'c' | remove: 'd' | remove: 'e' | remove: 'f' | remove: 'g' | remove: 'h' | remove: 'i' | remove: 'j' | remove: 'k' | remove: 'l' | remove: 'm' | remove: 'n' | remove: 'o' | remove: 'p' | remove: 'q' | remove: 'r' | remove: 's' | remove: 't' | remove: 'u' | remove: 'v' | remove: 'w' | remove: 'x' | remove: 'y' | remove: 'z' | remove: '0' | remove: '1' | remove: '2' | remove: '3' | remove: '4' | remove: '5' | remove: '6' | remove: '7' | remove: '8' | remove: '9' | remove: '-' | remove: '.' -%}
+      {%- assign labels = host | split: '.' -%}
+      {%- assign first = host | slice: 0, 1 -%}
+      {%- assign last = host | slice: -1, 1 -%}
+      {%- if host == blank or host.size > 253 or residue != blank or labels.size < 2 or labels.size > 50 or first == '.' or last == '.' or host contains '..' -%}{%- assign safe = false -%}{%- endif -%}
+      {%- for label in labels limit: 50 -%}
+        {%- assign first = label | slice: 0, 1 -%}
+        {%- assign last = label | slice: -1, 1 -%}
+        {%- if label == blank or label.size > 63 or first == '-' or last == '-' -%}{%- assign safe = false -%}{%- endif -%}
+      {%- endfor -%}
+      {%- assign tld = labels | last -%}
+      {%- assign numeric_tld = tld | remove: '0' | remove: '1' | remove: '2' | remove: '3' | remove: '4' | remove: '5' | remove: '6' | remove: '7' | remove: '8' | remove: '9' -%}
+      {%- if numeric_tld == blank -%}{%- assign safe = false -%}{%- endif -%}
+      {%- if safe -%}true{%- endif -%}
+    {%- endif -%}
+  {%- endunless -%}
+{%- endif -%}

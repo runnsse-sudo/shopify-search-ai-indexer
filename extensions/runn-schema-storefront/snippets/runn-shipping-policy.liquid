@@ -1,0 +1,30 @@
+{% doc %}
+  Emits configured ShippingService or OfferShippingDetails, never timing guesses.
+  @param {object} config - Valid V1 configuration
+  @param {string} kind - service or offer
+{% enddoc %}
+{%- assign country = config.shipping.country | upcase -%}
+{%- assign slug = country | downcase -%}
+{%- assign currency = config.shipping.currency | upcase -%}
+{% if kind == 'offer' %}
+  {% assign shipping_id = shop.url | append: '/#offer-shipping-standard-' | append: slug %}
+  {
+    "@type": "OfferShippingDetails",
+    "@id": {{ shipping_id | json }},
+    "shippingDestination": { "@type": "DefinedRegion", "addressCountry": {{ country | json }} },
+    "shippingRate": { "@type": "MonetaryAmount", "value": {{ config.shipping.rate | json }}, "currency": {{ currency | json }} }
+  }
+{% else %}
+  {% assign shipping_id = shop.url | append: '/#shipping-standard-' | append: slug %}
+  {
+    "@type": "ShippingService",
+    "@id": {{ shipping_id | json }},
+    "name": {{ config.shipping.label | strip | json }},
+    "fulfillmentType": "https://schema.org/FulfillmentTypeDelivery",
+    "shippingConditions": {
+      "@type": "ShippingConditions",
+      "shippingDestination": { "@type": "DefinedRegion", "addressCountry": {{ country | json }} },
+      "shippingRate": { "@type": "MonetaryAmount", "value": {{ config.shipping.rate | json }}, "currency": {{ currency | json }} }
+    }
+  }
+{% endif %}

@@ -1,40 +1,34 @@
-{% if request.page_type == 'product' and product != blank %}
+{% assign runn_page_name = '' %}
+{% case request.page_type %}
+  {% when 'product' %}
+    {% if product != blank %}{% assign runn_page_name = product.title %}{% endif %}
+  {% when 'collection' %}
+    {% if collection != blank %}{% assign runn_page_name = collection.title %}{% endif %}
+  {% when 'page' %}
+    {% if page != blank %}{% assign runn_page_name = page.title %}{% endif %}
+{% endcase %}
+{% if runn_page_name != blank and canonical_url != blank and shop.name != blank and shop.url != blank and routes.root_url != blank %}
   {% assign runn_breadcrumb_id = canonical_url | append: '#breadcrumb' %}
   {% assign runn_home_url = shop.url | append: routes.root_url %}
-
-  <script
-    type="application/ld+json"
-    data-added-by="runn-schema-storefront"
-  >
+  {% capture runn_json %}
     {
       "@context": "https://schema.org",
       "@type": "BreadcrumbList",
       "@id": {{ runn_breadcrumb_id | json }},
       "itemListElement": [
-        {
-          "@type": "ListItem",
-          "position": 1,
-          "name": {{ shop.name | json }},
-          "item": {{ runn_home_url | json }}
-        },
-        {
-          "@type": "ListItem",
-          "position": 2,
-          "name": {{ product.title | json }},
-          "item": {{ canonical_url | json }}
-        }
+        { "@type": "ListItem", "position": 1, "name": {{ shop.name | json }}, "item": {{ runn_home_url | json }} },
+        { "@type": "ListItem", "position": 2, "name": {{ runn_page_name | json }}, "item": {{ canonical_url | json }} }
       ]
     }
-  </script>
+  {% endcapture %}
+  {% capture runn_less_than_escape %}\u003c{% endcapture %}
+  <script type="application/ld+json" data-added-by="runn-schema-storefront">{{ runn_json | replace: '<', runn_less_than_escape }}</script>
 {% endif %}
-
 {% schema %}
 {
   "name": "Breadcrumb schema",
   "target": "body",
-  "enabled_on": {
-    "templates": ["product"]
-  },
+  "enabled_on": { "templates": ["product", "collection", "page"] },
   "settings": []
 }
 {% endschema %}
