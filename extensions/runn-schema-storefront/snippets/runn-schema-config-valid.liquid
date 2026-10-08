@@ -1,67 +1,54 @@
 {% doc %}
-  Validates the policy-bearing V1 configuration without supplying defaults.
+  Independently validates published shipping or return facts, without defaults.
+  Stored-only identity, shipping URL and timing do not gate publication.
   @param {object} config - Explicit app-owned JSON metafield value
-  @param {string} kind - shipping or returns
+  @param {string} kind - shipping, returns, or stored timing validation only
 {% enddoc %}
-{%- assign valid = false -%}
-{%- if config.version == 1 -%}
-  {%- assign shipping_enabled = config.shipping.enabled | json -%}
-  {%- assign returns_enabled = config.returns.enabled | json -%}
-  {%- assign country_s = config.shipping.country | upcase -%}
-  {%- assign country_r = config.returns.country | upcase -%}
-  {%- assign currency = config.shipping.currency | upcase -%}
-  {%- assign codes = country_s | append: country_r | append: currency -%}
-  {%- assign invalid_codes = codes | remove: 'A' | remove: 'B' | remove: 'C' | remove: 'D' | remove: 'E' | remove: 'F' | remove: 'G' | remove: 'H' | remove: 'I' | remove: 'J' | remove: 'K' | remove: 'L' | remove: 'M' | remove: 'N' | remove: 'O' | remove: 'P' | remove: 'Q' | remove: 'R' | remove: 'S' | remove: 'T' | remove: 'U' | remove: 'V' | remove: 'W' | remove: 'X' | remove: 'Y' | remove: 'Z' -%}
-  {%- assign rate_json = config.shipping.rate | json -%}
-  {%- assign rate_value = config.shipping.rate | plus: 0 -%}
-  {%- assign rate_number = rate_value | json -%}
-  {%- assign days_json = config.returns.periodDays | json -%}
-  {%- assign days_value = config.returns.periodDays | floor -%}
-  {%- assign days_integer = days_value | json -%}
-  {%- assign min_json = config.shipping.minimumDeliveryDays | json -%}
-  {%- assign min_value = config.shipping.minimumDeliveryDays | floor -%}
-  {%- assign min_integer = min_value | json -%}
-  {%- assign max_json = config.shipping.maximumDeliveryDays | json -%}
-  {%- assign max_value = config.shipping.maximumDeliveryDays | floor -%}
-  {%- assign max_integer = max_value | json -%}
-  {%- assign label_json = config.shipping.label | json | slice: 0, 1 -%}
-  {%- assign label_text = config.shipping.label | strip -%}
-  {%- capture shipping_url_valid -%}{%- render 'runn-schema-url-valid', value: config.shipping.policyUrl -%}{%- endcapture -%}
-  {%- capture return_url_valid -%}{%- render 'runn-schema-url-valid', value: config.returns.policyUrl -%}{%- endcapture -%}
-  {%- if shipping_enabled == 'true' or shipping_enabled == 'false' -%}
-    {%- if returns_enabled == 'true' or returns_enabled == 'false' -%}
-      {%- if country_s.size == 2 and country_r.size == 2 and currency.size == 3 and invalid_codes == blank -%}
-        {%- if rate_json == rate_number and rate_value >= 0 -%}
-          {%- if days_json == days_integer and days_value >= 0 and days_value <= 3650 -%}
-            {%- if min_json == min_integer and max_json == max_integer and min_value >= 0 and max_value <= 365 and max_value >= min_value -%}
-              {%- if label_json == '"' and shipping_url_valid == 'true' and return_url_valid == 'true' -%}
-                {%- if config.returns.method == 'ReturnByMail' and config.returns.fees == 'CustomerResponsibility' and config.returns.refundType == 'FullRefund' -%}
-                  {%- assign valid = true -%}
-                  {%- if config.shipping.enabled == true and label_text == blank -%}{%- assign valid = false -%}{%- endif -%}
-                  {%- if config.returns.enabled == true and days_value < 1 -%}{%- assign valid = false -%}{%- endif -%}
-                {%- endif -%}
-              {%- endif -%}
-            {%- endif -%}
-          {%- endif -%}
-        {%- endif -%}
+{%- assign version_json = config.version | json -%}
+{%- assign root_type = config | json | slice: 0, 1 -%}
+{%- assign shipping_type = config.shipping | json | slice: 0, 1 -%}
+{%- assign returns_type = config.returns | json | slice: 0, 1 -%}
+{%- if root_type == '{' and shipping_type == '{' and returns_type == '{' and config.version == 1 and version_json == '1' -%}
+  {%- if kind == 'timing' -%}
+    {%- assign has_min = false -%}{%- assign has_max = false -%}
+    {%- for field in config.shipping -%}
+      {%- if field[0] == 'minimumDeliveryDays' -%}{%- assign has_min = true -%}{%- endif -%}
+      {%- if field[0] == 'maximumDeliveryDays' -%}{%- assign has_max = true -%}{%- endif -%}
+    {%- endfor -%}
+    {%- assign min_json = config.shipping.minimumDeliveryDays | json -%}
+    {%- assign max_json = config.shipping.maximumDeliveryDays | json -%}
+    {%- assign min_value = config.shipping.minimumDeliveryDays | floor -%}
+    {%- assign max_value = config.shipping.maximumDeliveryDays | floor -%}
+    {%- assign min_integer = min_value | json -%}
+    {%- assign max_integer = max_value | json -%}
+    {%- if has_min and has_max -%}
+      {%- if min_json == 'null' and max_json == 'null' -%}true
+      {%- elsif min_json == min_integer and max_json == max_integer and min_value >= 0 and max_value <= 365 and min_value <= max_value -%}true
       {%- endif -%}
     {%- endif -%}
+  {%- elsif kind == 'shipping' and config.shipping.enabled == true -%}
+    {%- assign country_type = config.shipping.country | json | slice: 0, 1 -%}
+    {%- assign currency_type = config.shipping.currency | json | slice: 0, 1 -%}
+    {%- assign country = config.shipping.country | upcase -%}
+    {%- assign currency = config.shipping.currency | upcase -%}
+    {%- assign codes = country | append: currency -%}
+    {%- assign rate_json = config.shipping.rate | json -%}
+    {%- assign rate_value = config.shipping.rate | plus: 0 -%}
+    {%- assign rate_number = rate_value | json -%}
+    {%- assign label_type = config.shipping.label | json | slice: 0, 1 -%}
+    {%- assign label = config.shipping.label | strip -%}
+    {%- assign invalid_codes = codes | remove: 'A' | remove: 'B' | remove: 'C' | remove: 'D' | remove: 'E' | remove: 'F' | remove: 'G' | remove: 'H' | remove: 'I' | remove: 'J' | remove: 'K' | remove: 'L' | remove: 'M' | remove: 'N' | remove: 'O' | remove: 'P' | remove: 'Q' | remove: 'R' | remove: 'S' | remove: 'T' | remove: 'U' | remove: 'V' | remove: 'W' | remove: 'X' | remove: 'Y' | remove: 'Z' -%}
+    {%- if country_type == '"' and currency_type == '"' and country.size == 2 and currency.size == 3 and invalid_codes == blank and rate_json == rate_number and rate_value >= 0 and rate_value <= 1000000 and label_type == '"' and label != blank -%}true{%- endif -%}
+  {%- elsif kind == 'returns' and config.returns.enabled == true -%}
+    {%- assign country_type = config.returns.country | json | slice: 0, 1 -%}
+    {%- assign country = config.returns.country | upcase -%}
+    {%- assign invalid_codes = country | remove: 'A' | remove: 'B' | remove: 'C' | remove: 'D' | remove: 'E' | remove: 'F' | remove: 'G' | remove: 'H' | remove: 'I' | remove: 'J' | remove: 'K' | remove: 'L' | remove: 'M' | remove: 'N' | remove: 'O' | remove: 'P' | remove: 'Q' | remove: 'R' | remove: 'S' | remove: 'T' | remove: 'U' | remove: 'V' | remove: 'W' | remove: 'X' | remove: 'Y' | remove: 'Z' -%}
+    {%- assign days_json = config.returns.periodDays | json -%}
+    {%- assign days_value = config.returns.periodDays | floor -%}
+    {%- assign days_integer = days_value | json -%}
+    {%- capture url_valid -%}{%- render 'runn-schema-url-valid', value: config.returns.policyUrl -%}{%- endcapture -%}
+    {%- if country_type == '"' and country.size == 2 and invalid_codes == blank and days_json == days_integer and days_value >= 1 and days_value <= 3650 and url_valid == 'true' -%}
+      {%- if config.returns.method == 'ReturnByMail' and config.returns.fees == 'CustomerResponsibility' and config.returns.refundType == 'FullRefund' -%}true{%- endif -%}
+    {%- endif -%}
   {%- endif -%}
-{%- endif -%}
-{%- assign identity_valid = true -%}
-{%- assign founder_type = config.identity.founder | json | slice: 0, 1 -%}
-{%- unless founder_type == '"' -%}{%- assign identity_valid = false -%}{%- endunless -%}
-{%- assign identity_urls = 'facebookUrl,instagramUrl,xUrl,aboutUrl,contactUrl' | split: ',' -%}
-{%- for key in identity_urls -%}
-  {%- assign identity_url = config.identity[key] -%}
-  {%- capture identity_url_valid -%}{%- render 'runn-schema-url-valid', value: identity_url -%}{%- endcapture -%}
-  {%- unless identity_url_valid == 'true' -%}{%- assign identity_valid = false -%}{%- endunless -%}
-  {%- if key == 'facebookUrl' or key == 'instagramUrl' or key == 'xUrl' -%}
-    {%- assign identity_first = identity_url | slice: 0, 1 -%}
-    {%- if identity_first == '/' -%}{%- assign identity_valid = false -%}{%- endif -%}
-  {%- endif -%}
-{%- endfor -%}
-{%- if valid and identity_valid -%}
-  {%- if kind == 'shipping' and config.shipping.enabled == true -%}true{%- endif -%}
-  {%- if kind == 'returns' and config.returns.enabled == true -%}true{%- endif -%}
 {%- endif -%}
