@@ -1,17 +1,18 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { revokeProviderLifecycleWithClient } from "../services/provider-lifecycle";
+import { runSerializableTransactionWithRetry } from "../services/serializable-transaction-retry.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, session, topic } = await authenticate.webhook(request);
+  const { shop, topic } = await authenticate.webhook(request);
 
   console.log(`Received ${topic} webhook for ${shop}`);
 
-  // Webhook requests can trigger multiple times and after an app has already been uninstalled.
-  // If this webhook already ran, the session may have been deleted previously.
-  if (session) {
-    await db.session.deleteMany({ where: { shop } });
-  }
+  await runSerializableTransactionWithRetry(() => db.$transaction(
+    (tx) => revokeProviderLifecycleWithClient(tx, shop),
+    { isolationLevel: "Serializable" },
+  ));
 
   return new Response();
 };

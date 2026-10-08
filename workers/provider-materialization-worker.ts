@@ -1,4 +1,5 @@
 import prisma from "../app/db.server";
+import { isIndexNowLifecycleReadyWithClient } from "../app/services/provider-lifecycle";
 import { materializeProductPushPlanWithClient } from "../app/services/index-provider-materialization";
 import { planProductPush } from "../app/services/index-provider-plan";
 import {
@@ -76,6 +77,10 @@ async function main() {
     );
   }
 
+  if (!await isIndexNowLifecycleReadyWithClient(prisma, shop.id)) {
+    log("provider_materialization_lifecycle_not_ready");
+    return;
+  }
   log("provider_materialization_worker_started", {
     dryRun: config.dryRun,
     shopDomain: shop.domain,
@@ -275,6 +280,9 @@ async function main() {
       const outcome =
         await prisma.$transaction(
           async (tx) => {
+            if (!await isIndexNowLifecycleReadyWithClient(tx, shop.id)) {
+              return { outcome: "source_changed" } as const;
+            }
             const current =
               await tx.indexQueueItem.findUnique({
                 where: {

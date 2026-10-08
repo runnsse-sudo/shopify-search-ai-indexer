@@ -1,4 +1,5 @@
 import prisma from "../app/db.server";
+import { isIndexNowLifecycleReadyWithClient } from "../app/services/provider-lifecycle";
 import { createIndexAttempt } from "../app/services/index-attempt.server";
 import { claimNext, markCompleted, markFailed, recoverExpiredProcessing } from "../app/services/index-queue.server";
 import { sendPreparedIndexNowRequest } from "../app/services/indexnow-client";
@@ -53,6 +54,7 @@ async function main() {
       recover: recoverExpiredProcessing,
       claim: claimNext,
       invoke: sendPreparedIndexNowRequest,
+      canInvoke: (shopId, host) => isIndexNowLifecycleReadyWithClient(prisma, shopId, host),
       createAttempt: createIndexAttempt,
       complete: markCompleted,
       fail: markFailed,

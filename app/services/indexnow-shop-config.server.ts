@@ -1,4 +1,7 @@
 import prisma from "../db.server";
+import { hasOfflineInstallationWithClient, isIndexNowLifecycleReadyWithClient, listInstalledIndexNowConfigsWithClient } from "./provider-lifecycle";
+import { PublicFetchError, sanitizeOwnershipError, type PublicResolver } from "./public-fetch";
+import { runSerializableTransactionWithRetry } from "./serializable-transaction-retry.server";
 
 import {
   decryptProviderCredential,
@@ -7,9 +10,9 @@ import {
 import {
   buildIndexNowRootKeyLocation,
   generateIndexNowKey,
+  fetchIndexNowOwnershipFile,
   indexNowShopReadinessReason,
   normalizeIndexNowHost,
-  validateIndexNowOwnershipResponseUrl,
   validateIndexNowCredentialPayload,
   type IndexNowCredentialPayload,
 } from "./indexnow-shop-config";
@@ -205,11 +208,8 @@ export async function getIndexNowShopStatus(
     allowedHost:
       config.indexNowAllowedHost,
 
-    readinessReason:
-      readinessReason(
-        shop,
-        config,
-      ),
+    readinessReason: await hasOfflineInstallationWithClient(prisma, shop.domain)
+      ? readinessReason(shop, config) : "APP_NOT_INSTALLED",
   };
 }
 
@@ -367,6 +367,7 @@ export async function verifyIndexNowShopOwnership(
 
     fetchImpl?:
       typeof fetch;
+    resolve?: PublicResolver;
   } = {},
 ) {
   const env =
@@ -434,64 +435,16 @@ export async function verifyIndexNowShopOwnership(
       );
     }
 
-    const response =
-      await fetchImpl(
-        payload.keyLocation,
-        {
-          method: "GET",
-          redirect: "follow",
-
-          signal:
-            AbortSignal.timeout(
-              10000,
-            ),
-
-          headers: {
-            accept:
-              "text/plain,*/*;q=0.1",
-          },
-        },
-      );
-
-    if (!response.ok) {
-      throw new Error(
-        `IndexNow ownership URL returned HTTP ${response.status}`,
-      );
-    }
-
-    validateIndexNowOwnershipResponseUrl(
-      response.url,
-      payload.allowedHost,
-    );
-
-    const body =
-      (await response.text())
-        .replace(/^\uFEFF/, "")
-        .trim();
-
-    if (body !== payload.key) {
-      throw new Error(
-        "IndexNow ownership URL body does not match the configured key",
-      );
-    }
-
-    await prisma.shopProviderConfig.update({
-      where: {
-        shopId:
-          shop.id,
-      },
-
-      data: {
-        indexNowOwnershipLastCheckedAt:
-          now,
-
-        indexNowOwnershipVerifiedAt:
-          now,
-
-        indexNowOwnershipError:
-          null,
-      },
-    });
+    await fetchIndexNowOwnershipFile(payload, { fetchImpl, resolve: options.resolve });
+    // Do not resurrect verification revoked while the public fetch was running.
+    await runSerializableTransactionWithRetry(() => prisma.$transaction(async (tx) => {
+      if (!await hasOfflineInstallationWithClient(tx, shop.domain)) throw new PublicFetchError("PROVIDER_LIFECYCLE_NOT_READY");
+      const saved = await tx.shopProviderConfig.updateMany({
+        where: { shopId: shop.id, updatedAt: config.updatedAt },
+        data: { indexNowOwnershipLastCheckedAt: now, indexNowOwnershipVerifiedAt: now, indexNowOwnershipError: null },
+      });
+      if (saved.count !== 1) throw new PublicFetchError("PROVIDER_LIFECYCLE_NOT_READY");
+    }, { isolationLevel: "Serializable" }));
 
     return {
       verified: true,
@@ -503,9 +456,7 @@ export async function verifyIndexNowShopOwnership(
     };
   } catch (error) {
     const safeError =
-      error instanceof Error
-        ? error.message.slice(0, 1000)
-        : "IndexNow ownership verification failed";
+      sanitizeOwnershipError(error);
 
     await prisma.shopProviderConfig.update({
       where: {
@@ -627,20 +578,14 @@ export async function setIndexNowShopEnabled(
     env,
   );
 
-  await prisma.shopProviderConfig.update({
-    where: {
-      shopId:
-        shop.id,
-    },
-
-    data: {
-      indexNowEnabled:
-        true,
-
-      indexNowOwnershipError:
-        null,
-    },
-  });
+  await runSerializableTransactionWithRetry(() => prisma.$transaction(async (tx) => {
+    if (!await hasOfflineInstallationWithClient(tx, shop.domain)) throw new Error("APP_NOT_INSTALLED");
+    const changed = await tx.shopProviderConfig.updateMany({
+      where: { shopId: shop.id, updatedAt: config.updatedAt, indexNowOwnershipVerifiedAt: config.indexNowOwnershipVerifiedAt },
+      data: { indexNowEnabled: true, indexNowOwnershipError: null },
+    });
+    if (changed.count !== 1) throw new Error("PROVIDER_LIFECYCLE_CHANGED");
+  }, { isolationLevel: "Serializable" }));
 
   return getIndexNowShopStatus(
     shop.domain,
@@ -650,43 +595,7 @@ export async function setIndexNowShopEnabled(
 export async function listReadyIndexNowShopsForMaterialization(
   limit: number,
 ) {
-  const configs =
-    await prisma.shopProviderConfig.findMany({
-      where: {
-        indexNowEnabled:
-          true,
-
-        indexNowOwnershipVerifiedAt: {
-          not: null,
-        },
-      },
-
-      include: {
-        shop: {
-          select: {
-            id: true,
-            domain: true,
-            primaryDomain: true,
-          },
-        },
-      },
-
-      orderBy: [
-        {
-          materializationLastRunAt: {
-            sort: "asc",
-            nulls: "first",
-          },
-        },
-
-        {
-          shopId: "asc",
-        },
-      ],
-
-      take:
-        limit,
-    });
+  const configs = await listInstalledIndexNowConfigsWithClient(prisma, limit, "materializationLastRunAt");
 
   const ready = [];
 
@@ -721,43 +630,7 @@ export async function listReadyIndexNowShopsForMaterialization(
 export async function listReadyIndexNowShopsForExecution(
   limit: number,
 ) {
-  const configs =
-    await prisma.shopProviderConfig.findMany({
-      where: {
-        indexNowEnabled:
-          true,
-
-        indexNowOwnershipVerifiedAt: {
-          not: null,
-        },
-      },
-
-      include: {
-        shop: {
-          select: {
-            id: true,
-            domain: true,
-            primaryDomain: true,
-          },
-        },
-      },
-
-      orderBy: [
-        {
-          indexNowLastRunAt: {
-            sort: "asc",
-            nulls: "first",
-          },
-        },
-
-        {
-          shopId: "asc",
-        },
-      ],
-
-      take:
-        limit,
-    });
+  const configs = await listInstalledIndexNowConfigsWithClient(prisma, limit, "indexNowLastRunAt");
 
   const ready = [];
 
@@ -821,6 +694,8 @@ export async function getReadyIndexNowRuntimeConfig(
   ) {
     return null;
   }
+
+  if (!await isIndexNowLifecycleReadyWithClient(prisma, shopId)) return null;
 
   const payload =
     decryptPayload(

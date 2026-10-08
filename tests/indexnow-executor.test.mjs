@@ -20,6 +20,7 @@ const item = {
 function harness(overrides = {}) {
   const calls = { recover: [], claim: [], invoke: [], attempt: [], complete: [], fail: [], beforeInvoke: [] };
   const dependencies = {
+    canInvoke: async () => true,
     resolveShopId: async () => "shop-1",
     recover: async (input) => { calls.recover.push(input); },
     claim: async (...args) => { calls.claim.push(args); return item; },

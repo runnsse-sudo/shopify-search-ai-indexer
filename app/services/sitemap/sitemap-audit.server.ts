@@ -259,8 +259,9 @@ function resolveImageUrl(
   }
 }
 
-async function defaultXmlFetcher(
+export async function defaultXmlFetcher(
   input: SitemapXmlFetchInput,
+  dependencies: import("../public-fetch.ts").PublicFetchDependencies = {},
 ): Promise<SitemapXmlFetchResult> {
   const fetched =
     await fetchStorefrontPage({
@@ -278,7 +279,7 @@ async function defaultXmlFetcher(
         1,
       retryBaseDelayMs:
         250,
-    });
+    }, dependencies);
 
   return {
     requestedUrl:
