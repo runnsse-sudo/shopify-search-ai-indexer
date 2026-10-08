@@ -1,0 +1,62 @@
+{% doc %}
+  Emits one Product and Offer using localized variant data.
+  @param {product} product - Current product
+  @param {variant} variant - Variant being represented
+  @param {string} base_url - Canonical localized product URL
+  @param {string} currency - Presentment currency
+  @param {boolean} grouped - Whether supported option properties are available
+  @param {object} config - Explicit configuration
+  @param {string} shipping_valid - true only after validation
+  @param {string} returns_valid - true only after validation
+{% enddoc %}
+{%- assign variant_url = base_url | append: '?variant=' | append: variant.id -%}
+{%- assign product_id = base_url | append: '#product-' | append: variant.id -%}
+{%- assign offer_id = variant_url | append: '#offer' -%}
+{%- assign group_id = base_url | append: '#product-group' -%}
+{%- assign name = product.title -%}
+{%- unless product.has_only_default_variant -%}{%- assign name = name | append: ' - ' | append: variant.title -%}{%- endunless -%}
+{%- assign description = product.description | strip_html | strip -%}
+{%- assign image = variant.featured_image | default: product.featured_image -%}
+{%- if image != blank -%}
+  {%- assign image_src = image | image_url: width: 1920 -%}
+  {%- assign image_prefix = image_src | slice: 0, 2 -%}
+  {%- if image_prefix == '//' -%}{%- assign image_src = image_src | prepend: 'https:' -%}{%- endif -%}
+{%- endif -%}
+{
+  "@type": "Product",
+  "@id": {{ product_id | json }},
+  "name": {{ name | json }},
+  "url": {{ variant_url | json }}
+  {% if description != blank %}, "description": {{ description | json }}{% endif %}
+  {% if image != blank %}, "image": {{ image_src | json }}{% endif %}
+  {% if variant.sku != blank %}, "sku": {{ variant.sku | json }}{% endif %}
+  {% render 'runn-gtin-field', barcode: variant.barcode %}
+  {% if grouped %}
+    , "isVariantOf": { "@id": {{ group_id | json }} }
+    {% for option in product.options_with_values %}
+      {% assign option_name = option.name | downcase %}
+      {% assign option_value = variant.options[forloop.index0] %}
+      {% if option_value != blank %}
+        , {{ option_name | json }}: {{ option_value | json }}
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+  , "offers": {
+    "@type": "Offer",
+    "@id": {{ offer_id | json }},
+    "url": {{ variant_url | json }},
+    "price": {{ variant.price | divided_by: 100.0 | json }},
+    "priceCurrency": {{ currency | json }},
+    "availability": {% if variant.available %}"https://schema.org/InStock"{% else %}"https://schema.org/OutOfStock"{% endif %}
+    {% if shipping_valid == 'true' %}
+      {% assign country_slug = config.shipping.country | downcase %}
+      {% assign shipping_id = shop.url | append: '/#offer-shipping-standard-' | append: country_slug %}
+      , "shippingDetails": { "@id": {{ shipping_id | json }} }
+    {% endif %}
+    {% if returns_valid == 'true' %}
+      {% assign return_slug = config.returns.country | downcase %}
+      {% assign return_id = shop.url | append: '/#return-policy-' | append: return_slug %}
+      , "hasMerchantReturnPolicy": { "@id": {{ return_id | json }} }
+    {% endif %}
+  }
+}

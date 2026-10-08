@@ -1,0 +1,80 @@
+{% if block.settings.exclusive_owner_confirmed == true and request.page_type == 'product' and product != blank and product.title != blank and canonical_url != blank and shop.url != blank and product.requires_selling_plan != true %}
+  {% assign runn_config_metafield = app.metafields.runn_storefront.config_v1 %}
+  {% assign runn_config = runn_config_metafield.value %}
+  {% capture runn_shipping_valid %}{% render 'runn-schema-config-valid', config: runn_config, kind: 'shipping' %}{% endcapture %}
+  {% capture runn_returns_valid %}{% render 'runn-schema-config-valid', config: runn_config, kind: 'returns' %}{% endcapture %}
+  {% assign runn_currency = cart.currency.iso_code %}
+  {% assign runn_shipping_currency = runn_config.shipping.currency | upcase %}
+  {% if runn_shipping_currency != runn_currency %}{% assign runn_shipping_valid = '' %}{% endif %}
+  {% assign runn_grouped = false %}
+  {% assign runn_variant_count = product.variants_count %}
+  {% assign runn_loaded_count = product.variants.size %}
+  {% if runn_variant_count > 1 and runn_variant_count <= 50 and runn_loaded_count == runn_variant_count %}
+    {% assign runn_grouped = true %}
+    {% if product.options_with_values == blank or product.id == blank %}{% assign runn_grouped = false %}{% endif %}
+    {% for option in product.options_with_values %}
+      {% assign runn_option_name = option.name | downcase %}
+      {% unless runn_option_name == 'color' or runn_option_name == 'size' or runn_option_name == 'material' or runn_option_name == 'pattern' %}
+        {% assign runn_grouped = false %}
+      {% endunless %}
+    {% endfor %}
+    {% for variant in product.variants %}
+      {% if variant.price == blank or variant.price < 0 or variant.id == blank or variant.options.size != product.options_with_values.size %}
+        {% assign runn_grouped = false %}
+      {% endif %}
+      {% for value in variant.options %}
+        {% if value == blank %}{% assign runn_grouped = false %}{% endif %}
+      {% endfor %}
+    {% endfor %}
+  {% endif %}
+  {% assign runn_variant = product.selected_or_first_available_variant %}
+  {% if runn_config_metafield.type != 'json' %}
+    {% assign runn_shipping_valid = '' %}
+    {% assign runn_returns_valid = '' %}
+  {% endif %}
+  {% if runn_currency != blank and runn_variant != blank and runn_variant.id != blank and runn_variant.price != blank and runn_variant.price >= 0 %}
+    {% capture runn_json %}
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {% if runn_grouped %}
+          {% assign runn_group_id = canonical_url | append: '#product-group' %}
+          {
+            "@type": "ProductGroup",
+            "@id": {{ runn_group_id | json }},
+            "productGroupID": {{ product.id | append: '' | json }},
+            "name": {{ product.title | json }},
+            "url": {{ canonical_url | json }},
+            "variesBy": [
+              {% for option in product.options_with_values %}
+                {% assign runn_option_name = option.name | downcase %}
+                {% assign runn_property = 'https://schema.org/' | append: runn_option_name %}
+                {{ runn_property | json }}{% unless forloop.last %},{% endunless %}
+              {% endfor %}
+            ],
+            "hasVariant": [
+              {% for variant in product.variants %}
+                {% render 'runn-product-variant', product: product, variant: variant, base_url: canonical_url, currency: runn_currency, grouped: true, config: runn_config, shipping_valid: runn_shipping_valid, returns_valid: runn_returns_valid %}{% unless forloop.last %},{% endunless %}
+              {% endfor %}
+            ]
+          }
+        {% else %}
+          {% render 'runn-product-variant', product: product, variant: runn_variant, base_url: canonical_url, currency: runn_currency, grouped: false, config: runn_config, shipping_valid: runn_shipping_valid, returns_valid: runn_returns_valid %}
+        {% endif %}
+        {% if runn_shipping_valid == 'true' %}, {% render 'runn-shipping-policy', config: runn_config, kind: 'offer' %}{% endif %}
+        {% if runn_returns_valid == 'true' %}, {% render 'runn-return-policy', config: runn_config %}{% endif %}
+      ]
+    }
+    {% endcapture %}
+    {% capture runn_less_than_escape %}\u003c{% endcapture %}
+  <script type="application/ld+json" data-added-by="runn-schema-storefront">{{ runn_json | replace: '<', runn_less_than_escape }}</script>
+  {% endif %}
+{% endif %}
+{% schema %}
+{
+  "name": "Product schema (exclusive)",
+  "target": "body",
+  "enabled_on": { "templates": ["product"] },
+  "settings": [{ "type": "checkbox", "id": "exclusive_owner_confirmed", "label": "t:settings.product_exclusive_owner", "default": false }]
+}
+{% endschema %}

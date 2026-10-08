@@ -1,0 +1,42 @@
+{% if block.settings.enable_output == true and request.page_type == 'index' and shop.name != blank and canonical_url != blank and shop.url != blank %}
+  {% assign runn_config_metafield = app.metafields.runn_storefront.config_v1 %}
+  {% assign runn_config = runn_config_metafield.value %}
+  {% capture runn_shipping_valid %}{% render 'runn-schema-config-valid', config: runn_config, kind: 'shipping' %}{% endcapture %}
+  {% capture runn_returns_valid %}{% render 'runn-schema-config-valid', config: runn_config, kind: 'returns' %}{% endcapture %}
+  {% assign runn_store_id = shop.url | append: '/#online-store' %}
+  {% assign runn_website_id = shop.url | append: '/#website' %}
+  {% capture runn_json %}
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebSite",
+          "@id": {{ runn_website_id | json }},
+          "name": {{ shop.name | json }},
+          "url": {{ canonical_url | json }},
+          "publisher": { "@id": {{ runn_store_id | json }} }
+        },
+        {
+          "@type": "OnlineStore",
+          "@id": {{ runn_store_id | json }},
+          "name": {{ shop.name | json }},
+          "url": {{ shop.url | json }}
+          {% if runn_config_metafield.type == 'json' %}
+            {% if runn_shipping_valid == 'true' %}, "hasShippingService": {% render 'runn-shipping-policy', config: runn_config, kind: 'service' %}{% endif %}
+            {% if runn_returns_valid == 'true' %}, "hasMerchantReturnPolicy": {% render 'runn-return-policy', config: runn_config %}{% endif %}
+          {% endif %}
+        }
+      ]
+    }
+  {% endcapture %}
+  {% capture runn_less_than_escape %}\u003c{% endcapture %}
+  <script type="application/ld+json" data-added-by="runn-schema-storefront">{{ runn_json | replace: '<', runn_less_than_escape }}</script>
+{% endif %}
+{% schema %}
+{
+  "name": "Site identity schema",
+  "target": "body",
+  "enabled_on": { "templates": ["index"] },
+  "settings": [{ "type": "checkbox", "id": "enable_output", "label": "t:settings.site_identity_enable", "default": false }]
+}
+{% endschema %}

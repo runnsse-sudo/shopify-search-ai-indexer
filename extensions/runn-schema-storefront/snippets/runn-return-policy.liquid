@@ -1,0 +1,22 @@
+{% doc %}
+  Emits a return policy only after the caller validates explicit configuration.
+  @param {object} config - Valid V1 configuration
+{% enddoc %}
+{%- assign country = config.returns.country | upcase -%}
+{%- assign slug = country | downcase -%}
+{%- assign policy_id = shop.url | append: '/#return-policy-' | append: slug -%}
+{%- assign policy_url = config.returns.policyUrl | strip -%}
+{%- assign first = policy_url | slice: 0, 1 -%}
+{%- if first == '/' -%}{%- assign policy_url = shop.url | append: policy_url -%}{%- endif -%}
+{
+  "@type": "MerchantReturnPolicy",
+  "@id": {{ policy_id | json }},
+  "applicableCountry": {{ country | json }},
+  "returnPolicyCountry": {{ country | json }},
+  "returnPolicyCategory": "https://schema.org/MerchantReturnFiniteReturnWindow",
+  "merchantReturnDays": {{ config.returns.periodDays | json }},
+  "returnMethod": "https://schema.org/ReturnByMail",
+  "returnFees": "https://schema.org/ReturnFeesCustomerResponsibility",
+  "refundType": "https://schema.org/FullRefund"
+  {% if policy_url != blank %}, "merchantReturnLink": {{ policy_url | json }}{% endif %}
+}

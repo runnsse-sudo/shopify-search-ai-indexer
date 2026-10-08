@@ -95,7 +95,18 @@ Never redirect all unknown 404 URLs to the home page.
 5. side-by-side comparison with autoSchema
 6. disable autoSchema only after parity is verified
 
-Runn Merchant Policy is already live and verified.
+Phase G source foundation now includes an explicit schema ownership contract,
+site identity writer, broader product/collection/page breadcrumbs, a default-off
+Product/ProductGroup/Offer writer, explicit merchant-policy configuration, and
+deterministic captured-HTML parity/retirement tooling.
+
+Production rollout is NOT complete. autoSchema is NOT retired. Retirement remains
+blocked until controlled parity certification and ownership switchover pass.
+Merchant Policy source now fails closed without valid explicit configuration;
+existing live fallback behavior is not evidence of configured business facts.
+RETURN_POLICY_VALUE_VERIFIED=REQUIRED before rollout.
+
+See [Phase G ownership and rollout contract](PHASE-G-STRUCTURED-DATA-OWNERSHIP.md).
 
 ## Phase H — External app retirement
 

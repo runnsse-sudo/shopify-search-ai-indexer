@@ -1,1 +1,6 @@
-{}
+{
+  "settings": {
+    "site_identity_enable": "Enable after site identity parity certification",
+    "product_exclusive_owner": "Enable only after exclusive Product ownership certification"
+  }
+}

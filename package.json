@@ -46,7 +46,10 @@
     "build:storefront-settings": "esbuild app/services/storefront-settings.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/storefront-settings.mjs && esbuild app/services/storefront-settings.server.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/storefront-settings-server.mjs",
     "verify:storefront-settings": "npm run build:storefront-settings && node scripts/verify-storefront-settings.mjs",
     "build:seo-audit-worker": "esbuild workers/seo-audit-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build-workers/seo-audit-worker.mjs",
-    "seo-audit-worker": "npm run setup && node ./build-workers/seo-audit-worker.mjs"
+    "seo-audit-worker": "npm run setup && node ./build-workers/seo-audit-worker.mjs",
+    "build:phase-g-structured-data": "npm run build:seo-audit-core && esbuild app/services/seo-audit/schema-retirement.ts --bundle --platform=node --format=esm --packages=external --outfile=build-tests/schema-retirement.mjs",
+    "verify:phase-g-structured-data": "npm run build:phase-g-structured-data && node scripts/verify-phase-g-structured-data.mjs",
+    "certify:autoschema-retirement": "npm run build:phase-g-structured-data && node scripts/certify-autoschema-retirement.mjs"
   },
   "type": "module",
   "engines": {
