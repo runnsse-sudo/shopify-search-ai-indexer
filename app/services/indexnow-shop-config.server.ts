@@ -458,26 +458,31 @@ export async function verifyIndexNowShopOwnership(
     const safeError =
       sanitizeOwnershipError(error);
 
-    await prisma.shopProviderConfig.update({
-      where: {
-        shopId:
-          shop.id,
-      },
+    // An obsolete result must not disable a newer setup or rewrite revocation.
+    await runSerializableTransactionWithRetry(() => prisma.$transaction(async (tx) => {
+      if (!await hasOfflineInstallationWithClient(tx, shop.domain)) return;
+      await tx.shopProviderConfig.updateMany({
+        where: {
+          shopId:
+            shop.id,
+          updatedAt: config.updatedAt,
+        },
 
-      data: {
-        indexNowEnabled:
-          false,
+        data: {
+          indexNowEnabled:
+            false,
 
-        indexNowOwnershipLastCheckedAt:
-          now,
+          indexNowOwnershipLastCheckedAt:
+            now,
 
-        indexNowOwnershipVerifiedAt:
-          null,
+          indexNowOwnershipVerifiedAt:
+            null,
 
-        indexNowOwnershipError:
-          safeError,
-      },
-    });
+          indexNowOwnershipError:
+            safeError,
+        },
+      });
+    }, { isolationLevel: "Serializable" }));
 
     throw new Error(
       safeError,

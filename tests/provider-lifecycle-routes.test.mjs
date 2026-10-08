@@ -24,6 +24,7 @@ function reset() {
     session: true,
     queryCount: 0,
     cancellations: 0,
+    configWrites: 0,
     config: {
       shopId: "shop1",
       indexNowEnabled: true,
@@ -32,13 +33,18 @@ function reset() {
       indexNowCredentialIv: encrypted.iv,
       indexNowCredentialTag: encrypted.tag,
       indexNowOwnershipVerifiedAt: new Date(1000),
+      indexNowOwnershipLastCheckedAt: new Date(1000),
+      indexNowOwnershipError: null,
       updatedAt: new Date(1000),
       shop: { id: "shop1", domain, primaryDomain: host },
     },
   };
 }
 const client = {
-  $transaction: async (callback) => callback(client),
+  $transaction: async (callback, options) => {
+    assert.equal(options.isolationLevel, "Serializable");
+    return callback(client);
+  },
   shop: {
     findUnique: async () => ({
       id: "shop1",
@@ -66,18 +72,23 @@ const client = {
         : [];
     },
     updateMany: async ({ where, data }) => {
+      assert.equal(where.shopId, state.config.shopId);
       if (
         where.updatedAt &&
         where.updatedAt.getTime() !== state.config.updatedAt.getTime()
       )
         return { count: 0 };
+      state.configWrites++;
       Object.assign(state.config, data, {
         updatedAt: new Date(state.config.updatedAt.getTime() + 1),
       });
       return { count: 1 };
     },
     update: async ({ data }) => {
-      Object.assign(state.config, data);
+      state.configWrites++;
+      Object.assign(state.config, data, {
+        updatedAt: new Date(state.config.updatedAt.getTime() + 1),
+      });
       return { ...state.config };
     },
   },
@@ -166,6 +177,7 @@ test("actual materialization and execution selectors reject installed-state left
 });
 test("actual verification success requires offline installation and a current config version", async () => {
   reset();
+  state.config.indexNowOwnershipError = "FETCH_FAILED";
   const result = await server.verifyIndexNowShopOwnership(domain, {
     env,
     resolve,
@@ -173,6 +185,9 @@ test("actual verification success requires offline installation and a current co
   });
   assert.equal(result.verified, true);
   assert.ok(state.config.indexNowOwnershipVerifiedAt);
+  assert.equal(state.config.indexNowOwnershipError, null);
+  assert.ok(state.config.indexNowOwnershipLastCheckedAt.getTime() > 1000);
+  assert.equal(state.configWrites, 1);
 });
 test("uninstall during ownership fetch cannot restore verification even if Session is recreated", async () => {
   reset();
@@ -190,6 +205,7 @@ test("uninstall during ownership fetch cannot restore verification even if Sessi
   );
   assert.equal(state.config.indexNowEnabled, false);
   assert.equal(state.config.indexNowOwnershipVerifiedAt, null);
+  assert.equal(state.config.indexNowOwnershipError, "APP_UNINSTALLED");
 });
 test("actual enable rejects absent installation and cannot reactivate revoked config after reinstall", async () => {
   reset();
@@ -222,4 +238,93 @@ test("actual persisted ownership error never stores arbitrary key URL/response",
   assert.equal(state.config.indexNowOwnershipError, "FETCH_FAILED");
   assert.equal(state.config.indexNowEnabled, false);
   assert.equal(state.config.indexNowOwnershipVerifiedAt, null);
+  assert.ok(state.config.indexNowOwnershipLastCheckedAt.getTime() > 1000);
+  assert.equal(state.config.updatedAt.getTime(), 1001);
+  assert.equal(state.configWrites, 1);
+});
+
+for (const outcome of ["success", "failure"]) {
+  test(`stale ownership ${outcome} preserves newer verified and enabled config`, async () => {
+    reset();
+    let newer;
+    await assert.rejects(server.verifyIndexNowShopOwnership(domain, {
+      env, resolve,
+      fetchImpl: async () => {
+        Object.assign(state.config, {
+          updatedAt: new Date(9000),
+          indexNowEnabled: true,
+          indexNowOwnershipVerifiedAt: new Date(8000),
+          indexNowOwnershipLastCheckedAt: new Date(8000),
+          indexNowOwnershipError: null,
+        });
+        newer = structuredClone(state.config);
+        if (outcome === "failure") throw new Error(`private network error ${key}`);
+        return new Response(key);
+      },
+    }), outcome === "success" ? /PROVIDER_LIFECYCLE_NOT_READY/ : /FETCH_FAILED/);
+    assert.deepEqual(state.config, newer);
+    assert.equal(state.configWrites, 0);
+  });
+
+  test(`stale ownership ${outcome} preserves newer setup credentials and host`, async () => {
+    reset();
+    let newer;
+    await assert.rejects(server.verifyIndexNowShopOwnership(domain, {
+      env, resolve,
+      fetchImpl: async () => {
+        const replacement = encryptProviderCredential(JSON.stringify({
+          version: 1, key: "replacement-fixture-key",
+          keyLocation: "https://new-store.example/replacement-fixture-key.txt",
+        }), master);
+        Object.assign(state.config, {
+          updatedAt: new Date(9000), indexNowEnabled: false,
+          indexNowAllowedHost: "new-store.example",
+          indexNowCredentialCiphertext: replacement.ciphertext,
+          indexNowCredentialIv: replacement.iv,
+          indexNowCredentialTag: replacement.tag,
+          indexNowOwnershipVerifiedAt: null,
+          indexNowOwnershipLastCheckedAt: null,
+          indexNowOwnershipError: null,
+        });
+        newer = structuredClone(state.config);
+        if (outcome === "failure") return new Response("wrong fixture body");
+        return new Response(key);
+      },
+    }), outcome === "success" ? /PROVIDER_LIFECYCLE_NOT_READY/ : /OWNERSHIP_BODY_MISMATCH/);
+    assert.deepEqual(state.config, newer);
+    assert.equal(state.configWrites, 0);
+  });
+
+  for (const reinstall of [false, true]) {
+    test(`stale ${outcome} preserves uninstall state, recreated Session=${reinstall}`, async () => {
+      reset();
+      let revoked;
+      let writesAfterRevocation;
+      await assert.rejects(server.verifyIndexNowShopOwnership(domain, {
+        env, resolve,
+        fetchImpl: async () => {
+          await revokeProviderLifecycleWithClient(client, domain);
+          state.session = reinstall;
+          revoked = structuredClone(state.config);
+          writesAfterRevocation = state.configWrites;
+          if (outcome === "failure") throw new Error("old fetch failed");
+          return new Response(key);
+        },
+      }), outcome === "success" ? /PROVIDER_LIFECYCLE_NOT_READY/ : /FETCH_FAILED/);
+      assert.deepEqual(state.config, revoked);
+      assert.equal(state.config.indexNowOwnershipError, "APP_UNINSTALLED");
+      assert.equal(state.configWrites, writesAfterRevocation);
+    });
+  }
+}
+
+test("unchanged config without offline installation receives no failure mutation", async () => {
+  reset();
+  state.session = false;
+  const original = structuredClone(state.config);
+  await assert.rejects(server.verifyIndexNowShopOwnership(domain, {
+    env, resolve, fetchImpl: async () => { throw new Error("offline fixture"); },
+  }), /FETCH_FAILED/);
+  assert.deepEqual(state.config, original);
+  assert.equal(state.configWrites, 0);
 });
