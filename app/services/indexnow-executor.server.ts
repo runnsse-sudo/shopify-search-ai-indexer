@@ -37,6 +37,7 @@ export type IndexNowExecutorDependencies = {
   complete: (id: string, claimedAt: Date) => Promise<QueueTransitionResult>;
   fail: (id: string, claimedAt: Date, error: string, retryAt?: Date, terminal?: boolean) => Promise<QueueTransitionResult>;
   now: () => Date;
+  canInvoke: (shopId: string, host: string) => Promise<boolean>;
   beforeInvoke?: (details: IndexNowPreInvocationDetails) => void | Promise<void>;
 };
 
@@ -94,6 +95,9 @@ export async function executeOneIndexNowItem(
     action: item.action,
     host: prepared.host,
   });
+  if (!await dependencies.canInvoke(item.shopId, prepared.host)) {
+    return rejectClaim("PROVIDER_LIFECYCLE_NOT_READY");
+  }
   const startedAt = dependencies.now();
   const result = sanitizeIndexNowResult(await dependencies.invoke(prepared), config.key);
   const completedAt = dependencies.now();

@@ -44,6 +44,9 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
+      - name: Run isolated pure regression tests
+        run: npm run test:pure
+
       - name: Verify SEO audit parser
         run: npm run verify:seo-audit-core
 

@@ -2,6 +2,26 @@ import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 
 import { isValidIndexNowKey } from "./indexnow-verification.ts";
+import { fetchPublicText, PublicFetchError, sanitizeOwnershipError, type PublicFetchDependencies } from "./public-fetch.ts";
+
+export async function fetchIndexNowOwnershipFile(
+  input: { key: string; keyLocation: string; allowedHost: string },
+  dependencies: PublicFetchDependencies = {},
+) {
+  try {
+    validateIndexNowCredentialPayload({ version: 1, key: input.key, keyLocation: input.keyLocation }, input.allowedHost);
+    const response = await fetchPublicText({
+      url: input.keyLocation, allowedHost: input.allowedHost, maxRedirects: 5,
+      timeoutMs: 10_000, maxBodyBytes: 1024, headers: { accept: "text/plain,*/*;q=0.1" },
+    }, dependencies);
+    if (response.statusCode < 200 || response.statusCode >= 300) throw new PublicFetchError("OWNERSHIP_HTTP_REJECTED");
+    if (response.body.replace(/^\uFEFF/, "").trim() !== input.key) throw new PublicFetchError("OWNERSHIP_BODY_MISMATCH");
+    return { verified: true };
+  } catch (error) {
+    // The key appears in the pathname; never expose arbitrary transport errors.
+    throw new PublicFetchError(sanitizeOwnershipError(error));
+  }
+}
 
 export type IndexNowCredentialPayload =
   Readonly<{

@@ -9,6 +9,7 @@ const originalFetch =
 
 const productUrl =
   "https://example.com/products/example";
+const dependencies = { resolve: async () => [{ address: "93.184.216.34" }] };
 
 function htmlResponse(
   status,
@@ -48,7 +49,7 @@ try {
         allowedHost:
           "example.com",
         retryBaseDelayMs: 0,
-      });
+      }, dependencies);
 
     assert.equal(
       result.statusCode,
@@ -76,7 +77,7 @@ try {
         allowedHost:
           "example.com",
         retryBaseDelayMs: 0,
-      });
+      }, dependencies);
 
     assert.equal(
       result.statusCode,
@@ -104,7 +105,7 @@ try {
         allowedHost:
           "example.com",
         retryBaseDelayMs: 0,
-      });
+      }, dependencies);
 
     assert.equal(
       result.statusCode,
@@ -139,7 +140,7 @@ try {
         allowedHost:
           "example.com",
         retryBaseDelayMs: 0,
-      });
+      }, dependencies);
 
     assert.equal(
       result.statusCode,
@@ -172,7 +173,7 @@ try {
         allowedHost:
           "example.com",
         retryBaseDelayMs: 0,
-      });
+      }, dependencies);
 
     assert.equal(
       result.statusCode,
@@ -219,7 +220,7 @@ try {
         allowedHost:
           "example.com",
         retryBaseDelayMs: 0,
-      });
+      }, dependencies);
 
     assert.equal(
       result.statusCode,

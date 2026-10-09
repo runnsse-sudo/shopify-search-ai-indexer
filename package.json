@@ -2,6 +2,7 @@
   "name": "runn-search-ai-indexer",
   "private": true,
   "scripts": {
+    "test:pure": "node scripts/run-pure-tests.mjs",
     "build": "react-router build",
     "build:scan-worker": "esbuild workers/initial-scan-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build-workers/initial-scan-worker.mjs",
     "build:repair-worker": "esbuild workers/scan-error-repair-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build-workers/scan-error-repair-worker.mjs",
