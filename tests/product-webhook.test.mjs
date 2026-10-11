@@ -573,9 +573,10 @@ test("actual core commits one INTERNAL queue intent with canonical URL, fingerpr
   await add(f);
   const lease = await getLease(f);
   let title = "First";
+  let updatedAt = "2026-01-01T00:00:00.000Z";
   const admin = {
     graphql: async () => {
-      const body = await productResponse().json();
+      const body = await productResponse(updatedAt).json();
       Object.assign(body.data.product, {
         status: "ACTIVE",
         title,
@@ -593,14 +594,17 @@ test("actual core commits one INTERNAL queue intent with canonical URL, fingerpr
   const hash = f.state.products[0].contentHash;
   await add(f, { webhookId: "delivery-2" });
   title = "Changed";
+  updatedAt = "2026-01-01T00:00:01.000Z";
   result = await process(await getClaim(f, lease), admin);
   assert.equal(result.changed, true);
+  assert.equal(result.stale, false);
   assert.equal(f.state.queues.length, 1);
   assert.notEqual(f.state.products[0].contentHash, hash);
   await add(f, { webhookId: "delivery-3" });
   result = await process(await getClaim(f, lease), admin);
   assert.equal(result.changed, false);
   assert.equal(result.queued, false);
+  assert.equal(result.stale, false);
   assert.equal(f.state.queues.length, 1);
   assert.ok(f.state.receipts.every((row) => row.status === "COMPLETED"));
 });
