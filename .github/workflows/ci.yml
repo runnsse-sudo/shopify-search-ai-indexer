@@ -100,3 +100,6 @@ jobs:
 
       - name: Build SEO audit worker
         run: npm run build:seo-audit-worker
+
+      - name: Build product webhook worker
+        run: npm run build:product-webhook-worker
