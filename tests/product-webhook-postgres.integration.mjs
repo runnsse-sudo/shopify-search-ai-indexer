@@ -126,6 +126,52 @@ function runCliProcess(entry, args, env, timeoutMs = processTimeoutMs, graceMs =
   });
 }
 
+// Fixed diagnostic vocabulary only; never serialize a rejected error or identity.
+function createDiagnostics() {
+  const stages = new Set(["SETUP", "MIGRATION_FRESH", "MIGRATION_UPGRADE", "OLD_INSERT", "MIGRATION_LOCK", "DUPLICATE", "LEASE_SETUP", "LEASE", "CLAIM", "STALE_OWNER", "PRODUCT_FENCE", "RETRY_ROLLBACK", "F02_A", "F02_B", "CLEANUP"]);
+  const checks = new Set(["NONE", "FANOUT_REJECTED_ZERO", "DUP_ACCEPTED_COUNT", "DUP_DUPLICATE_COUNT", "DUP_RECEIPT_COUNT", "DUP_SHOP_COUNT", "LEASE_WINNER_COUNT", "LEASE_PERSISTED_TOKEN_MATCH", "CLAIM_OWNER_COUNT", "CLAIM_EXHAUSTED_FALSE", "CLAIM_ATTEMPT_COUNT", "CLAIM_STATUS_PROCESSING", "CLAIM_TOKEN_MATCH", "CLEANUP_OPERATION", "CLEANUP_TEMP_PARENT", "CLEANUP_TEMP_NAME"]);
+  const codes = new Set(["P2034", "P2002", "P2024", "P2028", "P1001", "P1002", "P1008", "P1017", "ERR_ASSERTION", "PRISMA_CLI_TIMEOUT", "PRISMA_CLI_START_FAILED", "PRISMA_CLI_RESOLUTION_FAILED"]);
+  const statuses = new Set(["PENDING", "PROCESSING", "RETRY", "COMPLETED", "FAILED", "CANCELLED"]);
+  let currentStage = "SETUP", currentCheck = "NONE", originalContext, cleanupContext;
+  const safeCode = (error) => {
+    try { const code = error?.code; return codes.has(code) ? code : "OTHER"; }
+    catch { return "OTHER"; }
+  };
+  const snapshot = (error) => Object.freeze({ stage: currentStage, check: currentCheck, code: safeCode(error) });
+  return {
+    stage(stage) {
+      if (!stages.has(stage)) throw new Error("INVALID_DIAGNOSTIC_STAGE");
+      currentStage = stage; currentCheck = "NONE";
+    },
+    check(check) {
+      if (!checks.has(check)) throw new Error("INVALID_DIAGNOSTIC_CHECK");
+      currentCheck = check;
+    },
+    safeCode,
+    safeStatus: (status) => statuses.has(status) ? status : "OTHER",
+    safeCount: (count) => Number.isSafeInteger(count) && count >= 0 ? count : 0,
+    captureOriginal(error) { originalContext ??= snapshot(error); },
+    captureCleanup(error) { cleanupContext ??= snapshot(error); },
+    failureLine(error) {
+      const context = originalContext ?? cleanupContext ?? snapshot(error);
+      return "PRODUCT_WEBHOOK_POSTGRES_INTEGRATION=FAIL; STAGE=" + context.stage + "; CHECK=" + context.check + "; CODE=" + context.code;
+    },
+    fanout(stage, results) {
+      if (!["DUPLICATE", "LEASE", "CLAIM"].includes(stage)) throw new Error("INVALID_DIAGNOSTIC_STAGE");
+      const rejected = results.filter((result) => result.status === "rejected");
+      const histogram = new Map();
+      for (const result of rejected) {
+        const code = safeCode(result.reason);
+        histogram.set(code, (histogram.get(code) ?? 0) + 1);
+      }
+      const codes = [...histogram].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([code, count]) => code + ":" + count).join(",") || "NONE";
+      console.log("CONCURRENCY_STAGE=" + stage + "; ATTEMPTED=" + results.length + "; FULFILLED=" + (results.length - rejected.length) + "; REJECTED=" + rejected.length + "; REJECTED_CODES=" + codes);
+    },
+  };
+}
+
+const diagnostics = createDiagnostics();
+
 async function main() {
   const base = guardedUrl();
   console.log("DATABASE_GUARD=PASS; HOST=127.0.0.1; DATABASE=webhook_ci");
@@ -249,16 +295,19 @@ async function main() {
       for (const name of names) await cp(join(migrationRoot, name), join(directory, "migrations", name), { recursive: true });
     }
 
+    diagnostics.stage("MIGRATION_FRESH");
     const full = await newSchema("full");
     await deploy(full.name, "full");
     await durableSchema(full.db, full.name, directories);
     console.log("MIGRATION_FRESH_FULL=PASS; MIGRATIONS=5");
+    diagnostics.stage("MIGRATION_UPGRADE");
     const upgrade = await newSchema("upgrade");
     await deploy(upgrade.name, "baseline"); await migrated(upgrade.db, baseline);
     const legacy = await seedLegacy(upgrade.db);
     await deploy(upgrade.name, "full");
     await durableSchema(upgrade.db, upgrade.name, directories); await backfill(upgrade.db, legacy);
     console.log("MIGRATION_UPGRADE=PASS; LEGACY_ROWS_BEFORE=1000; LEGACY_ROWS_AFTER=1000; LEGACY_ROWS_PRESERVED=YES");
+    diagnostics.stage("OLD_INSERT");
     const { acquireWebhookReceiptWithClient } = await import("../app/services/webhook-idempotency.server.ts");
     const oldInput = { shopId: "legacy_shop", webhookId: "old_runtime_delivery", eventId: null, topic: "products/update", shopifyProductGid: "gid://shopify/Product/1", triggeredAt: null };
     const oldInsert = () => upgrade.db.$transaction((tx) => acquireWebhookReceiptWithClient(tx, oldInput));
@@ -269,6 +318,7 @@ async function main() {
     for (const field of ["claimToken", "claimedAt", "lastErrorClass", "completedAt"]) assert.equal(oldRow[field], null);
     console.log("OLD_RUNTIME_INSERT_CONTRACT=PASS");
 
+    diagnostics.stage("MIGRATION_LOCK");
     const locked = await newSchema("lock");
     await deploy(locked.name, "baseline"); await migrated(locked.db, baseline);
     const lockLegacy = await seedLegacy(locked.db);
@@ -320,6 +370,7 @@ async function main() {
     await durableSchema(locked.db, locked.name, directories); await backfill(locked.db, lockLegacy);
     console.log("MIGRATION_AFTER_LOCK_RELEASE=PASS");
 
+    diagnostics.stage("SETUP");
     // Set the schema-specific URL BEFORE importing the real app/db singleton.
     process.env.DATABASE_URL = schemaUrl(full.name);
     const core = await import("../app/services/product-indexing.server.ts");
@@ -333,34 +384,67 @@ async function main() {
     const tx = (db, callback) => runSerializableTransactionWithRetry(() => db.$transaction(callback, { isolationLevel: "Serializable", maxWait: 10000, timeout: 15000 }));
     const at = () => new Date();
     const identity = (tag) => ({ shopDomain: tag + ".example", webhookId: tag, productGid: "gid://shopify/Product/1", topic: "products/update" });
-    const fanout = async (count, work) => {
+    const fanout = async (stage, count, work) => {
+      diagnostics.stage(stage);
       const gate = barrier();
       const pending = Array.from({ length: count }, (_, i) => gate.promise.then(() => work(pools[i % pools.length], i)));
       gate.release();
       const results = await Promise.allSettled(pending);
+      diagnostics.fanout(stage, results);
+      diagnostics.check("FANOUT_REJECTED_ZERO");
       assert.equal(results.filter((result) => result.status === "rejected").length, 0, "CONCURRENCY_RETRIES_EXHAUSTED");
       return results.map((result) => result.value);
     };
-    const intake = await fanout(16, (db) => tx(db, (connection) => store.acceptProductWebhookWithClient(connection, identity("duplicate"), at())));
+    const intake = await fanout("DUPLICATE", 16, (db) => tx(db, (connection) => store.acceptProductWebhookWithClient(connection, identity("duplicate"), at())));
+    console.log("DUP_ACCEPTED=" + intake.filter((value) => value === "ACCEPTED").length + "; DUP_DURABLE=" + intake.filter((value) => value === "DUPLICATE_DURABLE").length);
+    diagnostics.check("DUP_ACCEPTED_COUNT");
     assert.equal(intake.filter((value) => value === "ACCEPTED").length, 1);
+    diagnostics.check("DUP_DUPLICATE_COUNT");
     assert.equal(intake.filter((value) => value === "DUPLICATE_DURABLE").length, 15);
-    assert.equal(await full.db.webhookReceipt.count(), 1); assert.equal(await full.db.shop.count(), 1);
+    diagnostics.check("DUP_RECEIPT_COUNT");
+    const receiptCount = await full.db.webhookReceipt.count();
+    console.log("DUP_RECEIPTS=" + diagnostics.safeCount(receiptCount));
+    assert.equal(receiptCount, 1);
+    diagnostics.check("DUP_SHOP_COUNT");
+    const shopCount = await full.db.shop.count();
+    console.log("DUP_SHOPS=" + diagnostics.safeCount(shopCount));
+    assert.equal(shopCount, 1);
+    diagnostics.stage("LEASE_SETUP");
     // Pre-existing row isolates the lease CAS from independent initial upsert contention.
     await full.db.providerAutomationLease.upsert({ where: { key: store.PRODUCT_WEBHOOK_LEASE_KEY }, create: { key: store.PRODUCT_WEBHOOK_LEASE_KEY }, update: {} });
     const leaseTime = at();
-    const leases = await fanout(8, (db) => store.acquireProductWebhookLeaseWithClient(db, config.claimStaleMs, leaseTime));
-    const winners = leases.filter(Boolean); assert.equal(winners.length, 1);
+    const leases = await fanout("LEASE", 8, (db) => store.acquireProductWebhookLeaseWithClient(db, config.claimStaleMs, leaseTime));
+    const winners = leases.filter(Boolean);
+    console.log("LEASE_RESULT_COUNT=" + leases.length + "; LEASE_WINNERS=" + winners.length);
+    diagnostics.check("LEASE_WINNER_COUNT");
+    assert.equal(winners.length, 1);
     let lease = winners[0];
-    assert.equal((await full.db.providerAutomationLease.findUniqueOrThrow({ where: { key: store.PRODUCT_WEBHOOK_LEASE_KEY } })).ownerToken, lease.ownerToken);
+    diagnostics.check("LEASE_PERSISTED_TOKEN_MATCH");
+    const persistedLease = await full.db.providerAutomationLease.findUniqueOrThrow({ where: { key: store.PRODUCT_WEBHOOK_LEASE_KEY } });
+    console.log("LEASE_TOKEN_MATCH=" + (persistedLease.ownerToken === lease.ownerToken));
+    assert.equal(persistedLease.ownerToken, lease.ownerToken);
     const claimTime = at();
-    const claims = await fanout(8, (db) => tx(db, (connection) => store.claimProductWebhookWithClient(connection, config, lease, [], claimTime)));
-    const owners = claims.filter(Boolean); assert.equal(owners.length, 1);
-    const ownerA = owners[0]; assert.equal(ownerA.exhausted, false);
+    const claims = await fanout("CLAIM", 8, (db) => tx(db, (connection) => store.claimProductWebhookWithClient(connection, config, lease, [], claimTime)));
+    const owners = claims.filter(Boolean);
+    console.log("CLAIM_RESULT_COUNT=" + claims.length + "; CLAIM_OWNERS=" + owners.length);
+    diagnostics.check("CLAIM_OWNER_COUNT");
+    assert.equal(owners.length, 1);
+    const ownerA = owners[0];
+    console.log("CLAIM_EXHAUSTED=" + (ownerA.exhausted === true));
+    diagnostics.check("CLAIM_EXHAUSTED_FALSE");
+    assert.equal(ownerA.exhausted, false);
+    diagnostics.check("NONE");
     const claimedRow = await full.db.webhookReceipt.findUniqueOrThrow({ where: { id: ownerA.id } });
-    assert.equal(claimedRow.attemptCount, 1); assert.equal(claimedRow.status, "PROCESSING");
+    console.log("CLAIM_ATTEMPT_COUNT=" + diagnostics.safeCount(claimedRow.attemptCount) + "; CLAIM_STATUS=" + diagnostics.safeStatus(claimedRow.status) + "; CLAIM_TOKEN_MATCH=" + (claimedRow.claimToken === ownerA.claimToken));
+    diagnostics.check("CLAIM_ATTEMPT_COUNT");
+    assert.equal(claimedRow.attemptCount, 1);
+    diagnostics.check("CLAIM_STATUS_PROCESSING");
+    assert.equal(claimedRow.status, "PROCESSING");
+    diagnostics.check("CLAIM_TOKEN_MATCH");
     assert.equal(claimedRow.claimToken, ownerA.claimToken);
     console.log("DUPLICATE_ACCEPTED_COUNT=1; DUPLICATE_DURABLE_COUNT=15; ERRORS=0; LEASE_RACE_WINNERS=1; CLAIM_WINNERS=1");
 
+    diagnostics.stage("STALE_OWNER");
     const future = new Date(claimTime.getTime() + config.claimStaleMs + 1);
     lease = await store.acquireProductWebhookLeaseWithClient(full.db, config.claimStaleMs, future); assert.ok(lease);
     const ownerB = await tx(full.db, (connection) => store.claimProductWebhookWithClient(connection, config, lease, [], future));
@@ -386,6 +470,7 @@ async function main() {
       } };
     };
     const processClaim = (claim, adminResponse) => core.processProductDetection({ admin: adminResponse, shopDomain: claim.shop.domain, productGid: claim.shopifyProductGid, eventType: "UPDATED", primaryDomain: claim.shop.primaryDomain, durableClaim: claim });
+    diagnostics.stage("PRODUCT_FENCE");
     await full.db.shop.update({ where: { id: ownerA.shopId }, data: { primaryDomain: null } });
     const staleAdmin = syntheticAdmin();
     await assert.rejects(processClaim(ownerA, staleAdmin), WebhookOwnershipLostError);
@@ -406,6 +491,7 @@ async function main() {
       assert.ok(claim && !claim.exhausted); assert.equal(claim.shop.domain, input.shopDomain);
       return claim;
     };
+    diagnostics.stage("RETRY_ROLLBACK");
     const retryClaim = await work("retry", "retry.example");
     const beforeCooldown = (await full.db.shop.findUniqueOrThrow({ where: { id: retryClaim.shopId } })).productWebhookNextAttemptAt;
     const retryAt = at(); const syntheticRollback = new Error("SYNTHETIC_ROLLBACK");
@@ -424,12 +510,14 @@ async function main() {
     assert.equal(+(await full.db.shop.findUniqueOrThrow({ where: { id: retryClaim.shopId } })).productWebhookNextAttemptAt, +next.nextAttemptAt);
     console.log("RETRY_COOLDOWN_ROLLBACK=PASS; RETRY_COOLDOWN_ATOMIC_COMMIT=PASS");
 
+    diagnostics.stage("F02_A");
     const raceA = await work("race_a", "claim-a.example");
     await pools[1].shop.update({ where: { id: raceA.shopId }, data: { primaryDomain: "persisted-b.example" } });
     const adminA = syntheticAdmin(); await processClaim(raceA, adminA);
     assert.deepEqual(adminA.calls, { product: 1, domain: 0 });
     assert.equal((await full.db.shop.findUniqueOrThrow({ where: { id: raceA.shopId } })).primaryDomain, "persisted-b.example");
     assert.equal((await full.db.productIndexState.findUniqueOrThrow({ where: { shopId_shopifyProductGid: { shopId: raceA.shopId, shopifyProductGid: raceA.shopifyProductGid } } })).candidateUrl, "https://persisted-b.example/products/sample");
+    diagnostics.stage("F02_B");
     const raceB = await work("race_b", null);
     const adminB = syntheticAdmin(() => pools[2].shop.update({ where: { id: raceB.shopId }, data: { primaryDomain: "persisted-b.example" } }));
     await processClaim(raceB, adminB);
@@ -438,11 +526,18 @@ async function main() {
     assert.equal((await full.db.productIndexState.findUniqueOrThrow({ where: { shopId_shopifyProductGid: { shopId: raceB.shopId, shopifyProductGid: raceB.shopifyProductGid } } })).candidateUrl, "https://persisted-b.example/products/sample");
     console.log("F02_RACE_A=PASS; F02_RACE_B=PASS; PROVIDER_CALLS=0");
   } catch (error) {
+    diagnostics.captureOriginal(error);
     originalFailure = error;
     throw error;
   } finally {
+    diagnostics.stage("CLEANUP");
+    diagnostics.check("CLEANUP_OPERATION");
     const cleanupErrors = [];
-    const clean = async (callback) => { try { await callback(); } catch { cleanupErrors.push(true); } };
+    const clean = async (callback) => {
+      diagnostics.check("CLEANUP_OPERATION");
+      try { await callback(); }
+      catch (error) { diagnostics.captureCleanup(error); cleanupErrors.push(true); }
+    };
     if (releaseLock) releaseLock();
     if (lockTask) await clean(() => lockTask);
     if (restoreLockTimeout) await clean(restoreLockTimeout);
@@ -454,10 +549,14 @@ async function main() {
     }
     if (workspace) await clean(async () => {
       const target = resolve(workspace);
+      diagnostics.check("CLEANUP_TEMP_PARENT");
       assert.equal(dirname(target), resolve(tmpdir()), "UNSAFE_TEMP_CLEANUP_PARENT");
+      diagnostics.check("CLEANUP_TEMP_NAME");
       assert.match(basename(target), /^pw_migrations_[a-zA-Z0-9]+$/, "UNSAFE_TEMP_CLEANUP_NAME");
+      diagnostics.check("CLEANUP_OPERATION");
       await rm(target, { recursive: true, force: true });
     });
+    diagnostics.check("CLEANUP_OPERATION");
     process.env.DATABASE_URL = oldEnvironment;
     if (oldGlobal === undefined) delete globalThis.prismaGlobal;
     else globalThis.prismaGlobal = oldGlobal;
@@ -473,7 +572,6 @@ async function main() {
 
 // Never print raw Prisma/CLI errors, assertion values, URLs or credentials.
 main().catch((error) => {
-  const code = typeof error?.code === "string" && /^[A-Z0-9_]{1,64}$/.test(error.code) ? error.code : "HARNESS_ASSERTION_OR_SETUP";
-  console.error("PRODUCT_WEBHOOK_POSTGRES_INTEGRATION=FAIL; CODE=" + code);
+  console.error(diagnostics.failureLine(error));
   process.exitCode = 1;
 });

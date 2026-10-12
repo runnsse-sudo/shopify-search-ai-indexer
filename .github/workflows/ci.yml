@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 15
 
     env:
-      DATABASE_URL: postgresql://ci_validation:validation@127.0.0.1:5432/validation?schema=public
+      DATABASE_URL: postgresql://ci_validation@127.0.0.1:5432/validation?schema=public
 
     steps:
       - name: Checkout
@@ -114,17 +114,17 @@ jobs:
         image: postgres:17.10
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
           POSTGRES_DB: webhook_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
-          - 5432:5432
+          - "127.0.0.1:5432:5432"
         options: >-
           --health-cmd "pg_isready -U postgres -d webhook_ci"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
     env:
-      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/webhook_ci?schema=public
+      DATABASE_URL: postgresql://postgres@127.0.0.1:5432/webhook_ci?schema=public
       PRODUCT_WEBHOOK_POSTGRES_INTEGRATION: "1"
     steps:
       - name: Checkout
