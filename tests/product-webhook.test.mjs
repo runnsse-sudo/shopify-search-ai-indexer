@@ -794,6 +794,116 @@ for (const loss of ["receipt", "lease", "expired"]) {
   });
 }
 
+test("runner claims sequentially through success, failure and delay barriers", { timeout: 5000 }, async () => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    return { promise, resolve };
+  };
+  const expected = [
+    "acquire", "claim1:start", "claim1:end", "admin1:start", "admin1:end",
+    "guard1:start", "guard1:end", "process1:start", "process1:end", "delay1:start", "delay1:end",
+    "claim2:start", "claim2:end", "admin2:start", "admin2:end",
+    "guard2:start", "guard2:end", "process2:start", "process2:end",
+    "fail2:start", "fail2:end", "delay2:start", "delay2:end",
+    "claim3:start", "claim3:end", "release",
+  ];
+  const events = [];
+  const record = (event) => {
+    assert.equal(event, expected[events.length], "NEXT_CLAIM_STARTED_BEFORE_WORK_CYCLE_FINISHED");
+    events.push(event);
+  };
+  const stages = ["claim1", "admin1", "guard1", "process1", "delay1", "fail2", "delay2"];
+  const gates = new Map(stages.map((stage) => [stage, { entered: deferred(), finish: deferred() }]));
+  const hold = async (stage) => {
+    const gate = gates.get(stage);
+    gate.entered.resolve();
+    await gate.finish.promise;
+  };
+  let claimCalls = 0, currentClaims = 0, maxConcurrentClaims = 0;
+  let acquireCalls = 0, releaseCalls = 0, delayCalls = 0;
+  const lease = { ownerToken: "synthetic-lease", ttlMs: config.claimStaleMs };
+  const work = (number) => ({
+    exhausted: false, shopId: String(number), shop: { domain: "synthetic.example" },
+    shopifyProductGid: "gid://shopify/Product/1", attemptCount: 1, number,
+  });
+  const running = runProductWebhookWorker({ ...config, maxItems: 3 }, {
+    acquireLease: async () => { acquireCalls++; record("acquire"); return lease; },
+    releaseLease: async (released) => {
+      assert.equal(released, lease); releaseCalls++; record("release");
+    },
+    claim: async (owned) => {
+      assert.equal(owned, lease);
+      const number = ++claimCalls;
+      currentClaims++; maxConcurrentClaims = Math.max(maxConcurrentClaims, currentClaims);
+      record("claim" + number + ":start");
+      try {
+        if (number === 1) await hold("claim1");
+        record("claim" + number + ":end");
+        return number < 3 ? work(number) : null;
+      } finally { currentClaims--; }
+    },
+    admin: async (domain) => {
+      assert.equal(domain, "synthetic.example");
+      const number = claimCalls;
+      record("admin" + number + ":start");
+      if (number === 1) await hold("admin1");
+      record("admin" + number + ":end");
+      return {};
+    },
+    guard: async (item) => {
+      record("guard" + item.number + ":start");
+      if (item.number === 1) await hold("guard1");
+      record("guard" + item.number + ":end");
+    },
+    process: async (item) => {
+      record("process" + item.number + ":start");
+      if (item.number === 1) await hold("process1");
+      record("process" + item.number + ":end");
+      if (item.number === 2) throw new Error("SYNTHETIC_APPLICATION_FAILURE");
+    },
+    fail: async (item, error) => {
+      assert.equal(item.number, 2);
+      assert.deepEqual(error, { code: "APPLICATION_ERROR", retryable: false });
+      record("fail2:start"); await hold("fail2"); record("fail2:end");
+      return { status: "FAILED", lastErrorClass: "APPLICATION_ERROR" };
+    },
+    delay: async (ms) => {
+      assert.equal(ms, config.interItemDelayMs);
+      const stage = "delay" + ++delayCalls;
+      record(stage + ":start"); await hold(stage); record(stage + ":end");
+    },
+    now, shouldStop: () => false, log: () => {},
+  });
+  // Observe errors immediately, including early speculative claims, so a broken
+  // runner fails the test rather than hanging while we await an unreached gate.
+  const outcome = running.then(() => ({ done: true }), (error) => ({ error }));
+  const ended = outcome.then((result) => {
+    throw result.error ?? new Error("RUNNER_FINISHED_BEFORE_EXPECTED_BARRIER");
+  });
+  try {
+    for (const stage of stages) {
+      await Promise.race([gates.get(stage).entered.promise, ended]);
+      assert.equal(claimCalls, stage === "fail2" || stage === "delay2" ? 2 : 1);
+      assert.equal(currentClaims, stage === "claim1" ? 1 : 0);
+      gates.get(stage).finish.resolve();
+    }
+    const result = await outcome;
+    if (result.error) throw result.error;
+    assert.equal(acquireCalls, 1);
+    assert.equal(releaseCalls, 1);
+    assert.equal(claimCalls, 3);
+    assert.equal(maxConcurrentClaims, 1);
+    assert.equal(currentClaims, 0);
+    assert.equal(delayCalls, 2);
+    assert.deepEqual(events, expected);
+  } finally {
+    for (const gate of gates.values()) gate.finish.resolve();
+    // The race observer intentionally rejects on normal completion too.
+    await ended.catch(() => {});
+  }
+});
+
 test("stop requested during admin acquisition prevents product processing and further claims", async () => {
   const f = webhookFixture();
   auth(f);

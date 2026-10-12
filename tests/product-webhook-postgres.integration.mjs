@@ -129,7 +129,7 @@ function runCliProcess(entry, args, env, timeoutMs = processTimeoutMs, graceMs =
 // Fixed diagnostic vocabulary only; never serialize a rejected error or identity.
 function createDiagnostics() {
   const stages = new Set(["SETUP", "MIGRATION_FRESH", "MIGRATION_UPGRADE", "OLD_INSERT", "MIGRATION_LOCK", "DUPLICATE", "LEASE_SETUP", "LEASE", "CLAIM", "STALE_OWNER", "PRODUCT_FENCE", "RETRY_ROLLBACK", "F02_A", "F02_B", "CLEANUP"]);
-  const checks = new Set(["NONE", "FANOUT_REJECTED_ZERO", "DUP_ACCEPTED_COUNT", "DUP_DUPLICATE_COUNT", "DUP_RECEIPT_COUNT", "DUP_SHOP_COUNT", "LEASE_WINNER_COUNT", "LEASE_PERSISTED_TOKEN_MATCH", "CLAIM_OWNER_COUNT", "CLAIM_EXHAUSTED_FALSE", "CLAIM_ATTEMPT_COUNT", "CLAIM_STATUS_PROCESSING", "CLAIM_TOKEN_MATCH", "CLEANUP_OPERATION", "CLEANUP_TEMP_PARENT", "CLEANUP_TEMP_NAME"]);
+  const checks = new Set(["NONE", "FANOUT_REJECTED_ZERO", "DUP_ACCEPTED_COUNT", "DUP_DUPLICATE_COUNT", "DUP_RECEIPT_COUNT", "DUP_SHOP_COUNT", "LEASE_WINNER_COUNT", "LEASE_PERSISTED_TOKEN_MATCH", "CLAIM_FIRST_PRESENT", "CLAIM_FIRST_EXHAUSTED_FALSE", "CLAIM_FIRST_ATTEMPT_COUNT", "CLAIM_FIRST_STATUS_PROCESSING", "CLAIM_FIRST_TOKEN_PRESENT", "CLAIM_FIRST_TOKEN_MATCH", "CLAIM_FIRST_CLAIMED_AT_MATCH", "CLAIM_SECOND_NULL", "CLAIM_SECOND_ATTEMPT_UNCHANGED", "CLAIM_SECOND_STATUS_PROCESSING", "CLAIM_SECOND_TOKEN_MATCH", "CLAIM_SECOND_CLAIMED_AT_UNCHANGED", "CLEANUP_OPERATION", "CLEANUP_TEMP_PARENT", "CLEANUP_TEMP_NAME"]);
   const codes = new Set(["P2034", "P2002", "P2024", "P2028", "P1001", "P1002", "P1008", "P1017", "ERR_ASSERTION", "PRISMA_CLI_TIMEOUT", "PRISMA_CLI_START_FAILED", "PRISMA_CLI_RESOLUTION_FAILED"]);
   const statuses = new Set(["PENDING", "PROCESSING", "RETRY", "COMPLETED", "FAILED", "CANCELLED"]);
   let currentStage = "SETUP", currentCheck = "NONE", originalContext, cleanupContext;
@@ -157,7 +157,7 @@ function createDiagnostics() {
       return "PRODUCT_WEBHOOK_POSTGRES_INTEGRATION=FAIL; STAGE=" + context.stage + "; CHECK=" + context.check + "; CODE=" + context.code;
     },
     fanout(stage, results) {
-      if (!["DUPLICATE", "LEASE", "CLAIM"].includes(stage)) throw new Error("INVALID_DIAGNOSTIC_STAGE");
+      if (!["DUPLICATE", "LEASE"].includes(stage)) throw new Error("INVALID_DIAGNOSTIC_STAGE");
       const rejected = results.filter((result) => result.status === "rejected");
       const histogram = new Map();
       for (const result of rejected) {
@@ -423,25 +423,41 @@ async function main() {
     const persistedLease = await full.db.providerAutomationLease.findUniqueOrThrow({ where: { key: store.PRODUCT_WEBHOOK_LEASE_KEY } });
     console.log("LEASE_TOKEN_MATCH=" + (persistedLease.ownerToken === lease.ownerToken));
     assert.equal(persistedLease.ownerToken, lease.ownerToken);
+    diagnostics.stage("CLAIM");
+    // The production runner awaits each work cycle before the next claim.
+    // Both guards use one time so refresh cannot move the takeover boundary.
     const claimTime = at();
-    const claims = await fanout("CLAIM", 8, (db) => tx(db, (connection) => store.claimProductWebhookWithClient(connection, config, lease, [], claimTime)));
-    const owners = claims.filter(Boolean);
-    console.log("CLAIM_RESULT_COUNT=" + claims.length + "; CLAIM_OWNERS=" + owners.length);
-    diagnostics.check("CLAIM_OWNER_COUNT");
-    assert.equal(owners.length, 1);
-    const ownerA = owners[0];
-    console.log("CLAIM_EXHAUSTED=" + (ownerA.exhausted === true));
-    diagnostics.check("CLAIM_EXHAUSTED_FALSE");
+    diagnostics.check("CLAIM_FIRST_PRESENT");
+    const ownerA = await tx(full.db, (connection) => store.claimProductWebhookWithClient(connection, config, lease, [], claimTime));
+    assert.ok(ownerA);
+    diagnostics.check("CLAIM_FIRST_EXHAUSTED_FALSE");
     assert.equal(ownerA.exhausted, false);
-    diagnostics.check("NONE");
     const claimedRow = await full.db.webhookReceipt.findUniqueOrThrow({ where: { id: ownerA.id } });
-    console.log("CLAIM_ATTEMPT_COUNT=" + diagnostics.safeCount(claimedRow.attemptCount) + "; CLAIM_STATUS=" + diagnostics.safeStatus(claimedRow.status) + "; CLAIM_TOKEN_MATCH=" + (claimedRow.claimToken === ownerA.claimToken));
-    diagnostics.check("CLAIM_ATTEMPT_COUNT");
+    diagnostics.check("CLAIM_FIRST_ATTEMPT_COUNT");
     assert.equal(claimedRow.attemptCount, 1);
-    diagnostics.check("CLAIM_STATUS_PROCESSING");
+    diagnostics.check("CLAIM_FIRST_STATUS_PROCESSING");
     assert.equal(claimedRow.status, "PROCESSING");
-    diagnostics.check("CLAIM_TOKEN_MATCH");
+    diagnostics.check("CLAIM_FIRST_TOKEN_PRESENT");
+    assert.ok(claimedRow.claimToken !== null);
+    diagnostics.check("CLAIM_FIRST_TOKEN_MATCH");
     assert.equal(claimedRow.claimToken, ownerA.claimToken);
+    diagnostics.check("CLAIM_FIRST_CLAIMED_AT_MATCH");
+    assert.equal(+claimedRow.claimedAt, +ownerA.claimedAt);
+    console.log("CLAIM_FIRST_PRESENT=true; CLAIM_FIRST_EXHAUSTED=false; CLAIM_FIRST_ATTEMPT_COUNT=" + diagnostics.safeCount(claimedRow.attemptCount) + "; CLAIM_FIRST_STATUS=" + diagnostics.safeStatus(claimedRow.status) + "; CLAIM_FIRST_TOKEN_PRESENT=true; CLAIM_FIRST_TOKEN_MATCH=true; CLAIM_FIRST_CLAIMED_AT_MATCH=true");
+
+    diagnostics.check("CLAIM_SECOND_NULL");
+    const secondClaim = await tx(full.db, (connection) => store.claimProductWebhookWithClient(connection, config, lease, [], claimTime));
+    assert.equal(secondClaim, null);
+    const afterSecondClaim = await full.db.webhookReceipt.findUniqueOrThrow({ where: { id: ownerA.id } });
+    diagnostics.check("CLAIM_SECOND_ATTEMPT_UNCHANGED");
+    assert.equal(afterSecondClaim.attemptCount, claimedRow.attemptCount);
+    diagnostics.check("CLAIM_SECOND_STATUS_PROCESSING");
+    assert.equal(afterSecondClaim.status, "PROCESSING");
+    diagnostics.check("CLAIM_SECOND_TOKEN_MATCH");
+    assert.equal(afterSecondClaim.claimToken, claimedRow.claimToken);
+    diagnostics.check("CLAIM_SECOND_CLAIMED_AT_UNCHANGED");
+    assert.equal(+afterSecondClaim.claimedAt, +claimedRow.claimedAt);
+    console.log("CLAIM_SECOND_NULL=true; CLAIM_SECOND_ATTEMPT_UNCHANGED=true; CLAIM_SECOND_STATUS=" + diagnostics.safeStatus(afterSecondClaim.status) + "; CLAIM_SECOND_TOKEN_MATCH=true; CLAIM_SECOND_CLAIMED_AT_UNCHANGED=true");
     console.log("DUPLICATE_ACCEPTED_COUNT=1; DUPLICATE_DURABLE_COUNT=15; ERRORS=0; LEASE_RACE_WINNERS=1; CLAIM_WINNERS=1");
 
     diagnostics.stage("STALE_OWNER");
