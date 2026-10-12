@@ -17,6 +17,7 @@ import { buildCanonicalProductUrl, resolvePrimaryShopDomain } from "./shop-info.
 import { fetchProductForIndexing, type AdminGraphqlClient } from "./shopify-product.server";
 import { acquireWebhookReceiptWithClient } from "./webhook-idempotency.server";
 import { runSerializableTransactionWithRetry } from "./serializable-transaction-retry.server";
+import { completeProductWebhookWithClient, type ProductWebhookClaim } from "./product-webhook-store";
 
 type ProductWebhookIdentity = {
   webhookId: string;
@@ -42,15 +43,24 @@ export async function processProductDetection(input: {
   primaryDomain?: string | null;
   metadata?: Record<string, string | number | boolean | null>;
   webhook?: ProductWebhookIdentity;
+  durableClaim?: ProductWebhookClaim;
 }) {
-  const shop = await ensureShop(input.shopDomain);
+  if (input.durableClaim && input.webhook) throw new Error("INVALID_WEBHOOK_PROCESSING_MODE");
+  const shop = input.durableClaim
+    ? await prisma.shop.findUniqueOrThrow({ where: { id: input.durableClaim.shopId } })
+    : await ensureShop(input.shopDomain);
+  if (input.durableClaim && shop.domain !== input.shopDomain) throw new Error("INVALID_WEBHOOK_SHOP");
   try {
     const product = await fetchProductForIndexing(input.admin, input.productGid);
     const snapshotObservedAt = new Date();
     if (!product) throw new Error("Product was not returned by Admin GraphQL");
     const shopifyUpdatedAt = parseShopifyUpdatedAt(product.updatedAt);
-    const primaryDomain = await resolvePrimaryShopDomain(input.admin, input);
-    if (primaryDomain) await ensureShop(input.shopDomain, primaryDomain);
+    // Durable mode ignores claim/caller hints. Only current DB cache or a fresh fallback.
+    const fetchedDomain = Boolean(input.durableClaim && !shop.primaryDomain);
+    const primaryDomain = input.durableClaim
+      ? shop.primaryDomain || await resolvePrimaryShopDomain(input.admin)
+      : await resolvePrimaryShopDomain(input.admin, input);
+    if (primaryDomain && !input.durableClaim) await ensureShop(input.shopDomain, primaryDomain);
 
     const candidateUrl = buildCanonicalProductUrl(primaryDomain, product.handle);
     const indexabilityState = evaluateIndexability({
@@ -61,6 +71,22 @@ export async function processProductDetection(input: {
     const newHash = createProductFingerprint(product);
 
     return await runSerializableTransactionWithRetry(() => prisma.$transaction(async (tx) => {
+      let selectedDomain = primaryDomain;
+      if (input.durableClaim) {
+        await completeProductWebhookWithClient(tx, input.durableClaim);
+        // Read and choose within the same Serializable transaction as product effects.
+        // A cached value is never written back. Fresh fallback only wins a missing baseline CAS.
+        if (fetchedDomain && primaryDomain)
+          await tx.shop.updateMany({
+            where: { id: shop.id, primaryDomain: shop.primaryDomain },
+            data: { primaryDomain },
+          });
+        const currentShop = await tx.shop.findUniqueOrThrow({ where: { id: shop.id } });
+        selectedDomain = currentShop.primaryDomain;
+      }
+      const selectedCandidateUrl = input.durableClaim
+        ? buildCanonicalProductUrl(selectedDomain, product.handle)
+        : candidateUrl;
       if (input.webhook) {
         const receipt = await acquireWebhookReceiptWithClient(tx, {
           shopId: shop.id,
@@ -141,7 +167,7 @@ export async function processProductDetection(input: {
           legacyProductId: String(product.legacyResourceId),
           handle: product.handle,
           canonicalUrl,
-          candidateUrl,
+          candidateUrl: selectedCandidateUrl,
           title: product.title,
           productStatus: product.status,
           indexabilityState,
@@ -155,7 +181,7 @@ export async function processProductDetection(input: {
         update: {
           handle: product.handle,
           canonicalUrl,
-          candidateUrl,
+          candidateUrl: selectedCandidateUrl,
           title: product.title,
           productStatus: product.status,
           indexabilityState,
@@ -224,6 +250,8 @@ export async function processProductDetection(input: {
       return { changed: contentChanged || indexabilityChanged, queued, stale: false, indexabilityState };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   } catch (error) {
+    // Durable worker owns sanitized failure transitions; never write an unfenced/raw error here.
+    if (input.durableClaim) throw error;
     const message = error instanceof Error ? error.message : "Unknown product processing error";
     await prisma.indexEvent.create({
       data: {

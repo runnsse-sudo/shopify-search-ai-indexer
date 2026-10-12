@@ -2,6 +2,9 @@
   "name": "runn-search-ai-indexer",
   "private": true,
   "scripts": {
+    "test:product-webhook:postgres": "node --experimental-strip-types tests/product-webhook-postgres.integration.mjs",
+    "build:product-webhook-worker": "esbuild workers/product-webhook-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build-workers/product-webhook-worker.mjs",
+    "product-webhook-worker": "node ./build-workers/product-webhook-worker.mjs",
     "test:pure": "node scripts/run-pure-tests.mjs",
     "build": "react-router build",
     "build:scan-worker": "esbuild workers/initial-scan-worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build-workers/initial-scan-worker.mjs",

@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 15
 
     env:
-      DATABASE_URL: postgresql://ci_validation:validation@127.0.0.1:5432/validation?schema=public
+      DATABASE_URL: postgresql://ci_validation@127.0.0.1:5432/validation?schema=public
 
     steps:
       - name: Checkout
@@ -100,3 +100,43 @@ jobs:
 
       - name: Build SEO audit worker
         run: npm run build:seo-audit-worker
+
+      - name: Build product webhook worker
+        run: npm run build:product-webhook-worker
+
+  product-webhook-postgres:
+    name: PostgreSQL webhook integration
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17.10
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: webhook_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - "127.0.0.1:5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres -d webhook_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://postgres@127.0.0.1:5432/webhook_ci?schema=public
+      PRODUCT_WEBHOOK_POSTGRES_INTEGRATION: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Generate Prisma client
+        run: npx --no-install prisma generate
+      - name: Run PostgreSQL webhook integration
+        run: npm run test:product-webhook:postgres

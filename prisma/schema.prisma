@@ -86,6 +86,7 @@ model Shop {
   primaryDomain      String?
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
+  productWebhookNextAttemptAt DateTime   @default(now())
   productIndexStates ProductIndexState[]
   indexEvents        IndexEvent[]
   queueItems         IndexQueueItem[]
@@ -126,6 +127,15 @@ model ProviderAutomationLease {
   updatedAt  DateTime  @updatedAt
 }
 
+enum ProductWebhookStatus {
+  PENDING
+  PROCESSING
+  RETRY
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
 model WebhookReceipt {
   id                String   @id @default(cuid())
   shopId            String
@@ -134,11 +144,21 @@ model WebhookReceipt {
   topic             String
   shopifyProductGid String?
   triggeredAt       String?
-  processedAt       DateTime @default(now())
+  processedAt       DateTime? @default(now())
+  status            ProductWebhookStatus @default(COMPLETED)
+  receivedAt        DateTime @default(now())
+  attemptCount      Int @default(0)
+  nextAttemptAt     DateTime @default(now())
+  claimedAt         DateTime?
+  claimToken        String?
+  completedAt       DateTime?
+  lastErrorClass    String? @db.VarChar(64)
   shop              Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
   @@unique([shopId, webhookId])
   @@index([shopId, processedAt])
+  @@index([status, nextAttemptAt, receivedAt])
+  @@index([status, claimedAt])
 }
 
 model ProductIndexState {
