@@ -1,5 +1,6 @@
 import { Prisma, type IndexProvider, type IndexQueueAction } from "@prisma/client";
 import prisma from "../db.server";
+import { assertDrainQueue, drainNeed, type DrainTransactionFence } from "./product-webhook-drain-contract";
 import {
   cancelPendingForProviderActionWithClient,
   enqueueProductWithClient,
@@ -72,7 +73,16 @@ export async function cancelPendingForProductWithClient(
   shopId: string,
   shopifyProductGid: string,
   action?: IndexQueueAction,
+  drainFence?: DrainTransactionFence,
 ) {
+  if (drainFence) {
+    drainNeed(shopId === drainFence.shopId && shopifyProductGid === drainFence.shopifyProductGid && action);
+    const rows = await tx.indexQueueItem.findMany({ where: { shopId, shopifyProductGid, status: "PENDING", action }, take: 501 });
+    drainNeed(rows.length <= 500); rows.forEach(row => assertDrainQueue(drainFence, row));
+    drainNeed(new Set([...drainFence.state.cancelled, ...rows.map(r => r.id)]).size <= 37);
+    const result = await tx.indexQueueItem.updateMany({ where: { shopId, shopifyProductGid, status: "PENDING", action, id: { in: rows.map(r => r.id) }, OR: rows.map(r => ({ id: r.id, updatedAt: r.updatedAt, provider: r.provider })) }, data: { status: "CANCELLED", completedAt: new Date(), claimedAt: null, dedupeKey: null } });
+    drainNeed(result.count === rows.length); rows.forEach(r => drainFence.cancelled.add(r.id)); return result;
+  }
   return tx.indexQueueItem.updateMany({
     where: { shopId, shopifyProductGid, status: "PENDING", ...(action ? { action } : {}) },
     data: { status: "CANCELLED", completedAt: new Date(), claimedAt: null, dedupeKey: null },

@@ -128,7 +128,7 @@ function runCliProcess(entry, args, env, timeoutMs = processTimeoutMs, graceMs =
 
 // Fixed diagnostic vocabulary only; never serialize a rejected error or identity.
 function createDiagnostics() {
-  const stages = new Set(["SETUP", "MIGRATION_FRESH", "MIGRATION_UPGRADE", "OLD_INSERT", "MIGRATION_LOCK", "DUPLICATE", "LEASE_SETUP", "LEASE", "CLAIM", "STALE_OWNER", "PRODUCT_FENCE", "RETRY_ROLLBACK", "F02_A", "F02_B", "CLEANUP"]);
+  const stages = new Set(["SETUP", "MIGRATION_FRESH", "MIGRATION_UPGRADE", "OLD_INSERT", "MIGRATION_LOCK", "DUPLICATE", "LEASE_SETUP", "LEASE", "CLAIM", "STALE_OWNER", "PRODUCT_FENCE", "RETRY_ROLLBACK", "F02_A", "F02_B", "MANIFEST_DRAIN", "CLEANUP"]);
   const checks = new Set(["NONE", "FANOUT_REJECTED_ZERO", "DUP_ACCEPTED_COUNT", "DUP_DUPLICATE_COUNT", "DUP_RECEIPT_COUNT", "DUP_SHOP_COUNT", "LEASE_WINNER_COUNT", "LEASE_PERSISTED_TOKEN_MATCH", "CLAIM_FIRST_PRESENT", "CLAIM_FIRST_EXHAUSTED_FALSE", "CLAIM_FIRST_ATTEMPT_COUNT", "CLAIM_FIRST_STATUS_PROCESSING", "CLAIM_FIRST_TOKEN_PRESENT", "CLAIM_FIRST_TOKEN_MATCH", "CLAIM_FIRST_CLAIMED_AT_MATCH", "CLAIM_SECOND_NULL", "CLAIM_SECOND_ATTEMPT_UNCHANGED", "CLAIM_SECOND_STATUS_PROCESSING", "CLAIM_SECOND_TOKEN_MATCH", "CLAIM_SECOND_CLAIMED_AT_UNCHANGED", "CLEANUP_OPERATION", "CLEANUP_TEMP_PARENT", "CLEANUP_TEMP_NAME"]);
   const codes = new Set(["P2034", "P2002", "P2024", "P2028", "P1001", "P1002", "P1008", "P1017", "ERR_ASSERTION", "PRISMA_CLI_TIMEOUT", "PRISMA_CLI_START_FAILED", "PRISMA_CLI_RESOLUTION_FAILED"]);
   const statuses = new Set(["PENDING", "PROCESSING", "RETRY", "COMPLETED", "FAILED", "CANCELLED"]);
@@ -541,6 +541,85 @@ async function main() {
     assert.equal((await full.db.shop.findUniqueOrThrow({ where: { id: raceB.shopId } })).primaryDomain, "persisted-b.example");
     assert.equal((await full.db.productIndexState.findUniqueOrThrow({ where: { shopId_shopifyProductGid: { shopId: raceB.shopId, shopifyProductGid: raceB.shopifyProductGid } } })).candidateUrl, "https://persisted-b.example/products/sample");
     console.log("F02_RACE_A=PASS; F02_RACE_B=PASS; PROVIDER_CALLS=0");
+
+    diagnostics.stage("MANIFEST_DRAIN");
+    const contract = await import("../app/services/product-webhook-drain-contract.ts");
+    const { runManifestBoundProductWebhookDrain } = await import("../app/services/product-webhook-runner.ts");
+    const { prepareProductWebhookDrainAuth } = await import("../app/services/product-webhook-drain-auth.server.ts");
+    await store.releaseProductWebhookLeaseWithClient(full.db, lease);
+    const drainShop = await full.db.shop.create({ data: { id: "integration-drain-shop", domain: "integration-drain.myshopify.com", primaryDomain: "store.example", productWebhookNextAttemptAt: new Date(0) } });
+    await full.db.productIndexState.createMany({ data: Array.from({ length: 17 }, (_, i) => ({ id: `integration-product-${i}`, shopId: drainShop.id, shopifyProductGid: `gid://shopify/Product/${5000 + i}`, contentHash: "a".repeat(64), indexabilityState: "INDEXABLE", shopifyUpdatedAt: new Date(0), canonicalUrl: "https://store.example/products/sample" })) });
+    await full.db.webhookReceipt.createMany({ data: Array.from({ length: 20 }, (_, i) => ({ id: `integration-receipt-${String(i).padStart(2, "0")}`, shopId: drainShop.id, webhookId: `integration-delivery-${i}`, shopifyProductGid: `gid://shopify/Product/${5000 + i % 17}`, topic: "products/update", status: "PENDING", attemptCount: 0, processedAt: null, receivedAt: new Date(0), nextAttemptAt: new Date(0) })) });
+    const manifestRows = await full.db.webhookReceipt.findMany({ where: { shopId: drainShop.id }, orderBy: { id: "asc" } });
+    const manifest = manifestRows.map(row => Object.fromEntries(["id", "shopId", "webhookId", "shopifyProductGid", "topic"].map(k => [k, row[k]])));
+    const rawManifest = contract.canonicalDrainJson(manifest), manifestHash = contract.drainHash(rawManifest);
+    const rawEffects = contract.canonicalDrainJson({ manifestSha256: manifestHash, domain: drainShop.domain, primaryDomain: "store.example", products: (await full.db.productIndexState.findMany({ where: { shopId: drainShop.id } })).map(contract.drainProduct), queues: [] });
+    const drainConfig = productWebhookConfig({ PRODUCT_WEBHOOK_WORKER_ENABLED: "true", PRODUCT_WEBHOOK_DRAIN_MODE: "manifest-once-v1", PRODUCT_WEBHOOK_DRAIN_MANIFEST_B64: Buffer.from(rawManifest).toString("base64"), PRODUCT_WEBHOOK_DRAIN_MANIFEST_SHA256: manifestHash, PRODUCT_WEBHOOK_DRAIN_EFFECTS_B64: Buffer.from(rawEffects).toString("base64"), PRODUCT_WEBHOOK_DRAIN_EFFECTS_SHA256: contract.drainHash(rawEffects) });
+    const spec = drainConfig.drain;
+    assert.ok(spec);
+    await full.db.webhookReceipt.create({ data: { id: "earlier-outside-manifest", shopId: drainShop.id, webhookId: "outside-delivery", shopifyProductGid: manifest[0].shopifyProductGid, topic: "products/update", status: "PENDING", receivedAt: new Date(0), nextAttemptAt: new Date(0) } });
+    const drainLease = await store.acquireProductWebhookLeaseWithClient(full.db, config.claimStaleMs, at()); assert.ok(drainLease);
+    const race = await Promise.allSettled([full.db, pools[0]].map(db => tx(db, connection => store.claimManifestProductWebhookWithClient(connection, spec, spec.manifest[0], drainLease, at(), drainShop.domain))));
+    assert.equal(race.filter(r => r.status === "fulfilled").length, 1, "DRAIN_CAS_WINNERS");
+    const owned = race.find(r => r.status === "fulfilled").value;
+    assert.equal(owned.id, spec.manifest[0].id); assert.equal(owned.attemptCount, 1);
+    assert.equal((await full.db.webhookReceipt.findUniqueOrThrow({ where: { id: "earlier-outside-manifest" } })).attemptCount, 0);
+    const effectState = contract.createDrainEffectState(spec);
+    const drainAdmin = { graphql: async (_query, options) => Response.json({ data: { product: { id: options.variables.id, legacyResourceId: "1", handle: "sample", title: "Synthetic", descriptionHtml: "", productType: "", vendor: "", tags: [], status: "ACTIVE", onlineStoreUrl: "https://store.example/products/sample", publishedAt: "2026-01-01T00:00:00Z", updatedAt: at().toISOString(), seo: { title: null, description: null }, variants: { nodes: [] }, media: { nodes: [] } } } }) };
+    const originalTransaction = appClient.$transaction.bind(appClient);
+    const rollback = new Error("SYNTHETIC_DRAIN_ROLLBACK");
+    try {
+      appClient.$transaction = (callback, options) => originalTransaction(async connection => { await callback(connection); throw rollback; }, options);
+      await assert.rejects(core.processProductDetection({ admin: drainAdmin, shopDomain: drainShop.domain, productGid: owned.shopifyProductGid, eventType: "UPDATED", durableClaim: owned, drainEffects: effectState }), error => error === rollback);
+    } finally { appClient.$transaction = originalTransaction; }
+    assert.equal(await full.db.indexEvent.count({ where: { shopId: drainShop.id } }), 0);
+    assert.equal(await full.db.indexQueueItem.count({ where: { shopId: drainShop.id } }), 0);
+    assert.equal((await full.db.webhookReceipt.findUniqueOrThrow({ where: { id: owned.id } })).status, "PROCESSING");
+    assert.equal(effectState.created.size, 0);
+    assert.equal((await full.db.productIndexState.findUniqueOrThrow({ where: { id: "integration-product-0" } })).contentHash, "a".repeat(64));
+    const { enqueueProductWithClient } = await import("../app/services/index-queue-client.ts");
+    let externalInserted = false;
+    await assert.rejects(tx(full.db, async connection => {
+      const p = await connection.productIndexState.findUniqueOrThrow({ where: { id: "integration-product-0" } });
+      const fence = await contract.beginDrainTransaction(effectState, connection, p, drainShop.id, manifest[0].shopifyProductGid, drainShop.primaryDomain);
+      if (!externalInserted) {
+        await pools[1].indexQueueItem.create({ data: { id: "unapproved-slot", shopId: drainShop.id, shopifyProductGid: manifest[0].shopifyProductGid, provider: "INTERNAL", action: "INDEX", status: "PENDING", reason: "UNAPPROVED", dedupeKey: `${drainShop.id}|${manifest[0].shopifyProductGid}|INTERNAL|INDEX` } });
+        externalInserted = true;
+      }
+      await enqueueProductWithClient(connection, { shopId: drainShop.id, shopifyProductGid: manifest[0].shopifyProductGid, url: "https://store.example/products/sample", reason: "CONTENT_CHANGED" }, fence);
+    }));
+    const untouchedSlot = await full.db.indexQueueItem.findUniqueOrThrow({ where: { id: "unapproved-slot" } });
+    assert.equal(untouchedSlot.reason, "UNAPPROVED"); assert.equal(untouchedSlot.status, "PENDING");
+    assert.equal(effectState.created.size, 0);
+    await full.db.indexQueueItem.delete({ where: { id: "unapproved-slot" } });
+    // Reset only synthetic isolated test data, never production/replay behavior.
+    await full.db.webhookReceipt.update({ where: { id: owned.id }, data: { status: "PENDING", attemptCount: 0, claimToken: null, claimedAt: null } });
+    await store.releaseProductWebhookLeaseWithClient(full.db, drainLease);
+    let authReads = 0, loads = 0, acquisitions = 0;
+    let expires = new Date(0);
+    const authMetadata = () => ({ domain: drainShop.domain, primaryDomain: drainShop.primaryDomain, sessions: [{ id: `offline_${drainShop.domain}`, shop: drainShop.domain, isOnline: false, scope: "read_products", expires }] });
+    const drainDeps = {
+      preflight: () => tx(full.db, connection => store.preflightProductWebhookDrainWithClient(connection, spec, at())),
+      auth: () => prepareProductWebhookDrainAuth({ spec, requiredScopes: "read_products", now: at, readMetadata: async () => authMetadata(), loadSession: async () => { loads++; return { ...authMetadata().sessions[0], accessToken: "SYNTHETIC_ONLY", isScopeChanged: () => false }; }, fetch: async (_url, options) => { authReads++; const body = JSON.parse(options.body); return body.query.includes("ShopPrimaryDomain") ? Response.json({ data: { shop: { primaryDomain: { host: "store.example" } } } }) : drainAdmin.graphql(body.query, { variables: body.variables }); } }),
+      acquireLease: () => { acquisitions++; return store.acquireProductWebhookLeaseWithClient(full.db, config.claimStaleMs, at()); }, releaseLease: l => store.releaseProductWebhookLeaseWithClient(full.db, l),
+      claim: (member, l, now, expectedDomain) => tx(full.db, connection => store.claimManifestProductWebhookWithClient(connection, spec, member, l, now, expectedDomain)),
+      guard: (work, now) => tx(full.db, connection => store.guardProductWebhookClaimWithClient(connection, work, now)),
+      process: (work, adminResponse, effects) => core.processProductDetection({ admin: adminResponse, shopDomain: work.shop.domain, productGid: work.shopifyProductGid, eventType: "UPDATED", metadata: { webhookId: work.webhookId }, durableClaim: work, drainEffects: effects }),
+      fail: (work, error, now) => tx(full.db, connection => store.failProductWebhookWithClient(connection, work, drainConfig, error, now)),
+      log: () => {}, now: at, delay: async () => {}, shouldStop: () => false,
+    };
+    await assert.rejects(runManifestBoundProductWebhookDrain(drainConfig, drainDeps));
+    assert.equal(loads, 0); assert.equal(authReads, 0); assert.equal(acquisitions, 0);
+    expires = new Date(Date.now() + 3600000);
+    await runManifestBoundProductWebhookDrain(drainConfig, drainDeps);
+    assert.equal(loads, 1); assert.equal(authReads, 21); assert.equal(acquisitions, 1);
+    assert.equal(await full.db.webhookReceipt.count({ where: { id: { in: manifest.map(r => r.id) }, status: "COMPLETED", attemptCount: 1, claimToken: null, claimedAt: null } }), 20);
+    assert.equal(await full.db.indexEvent.count({ where: { shopId: drainShop.id } }), 20);
+    assert.equal(await full.db.productIndexState.count({ where: { shopId: drainShop.id } }), 17);
+    assert.equal(await full.db.indexQueueItem.count({ where: { shopId: drainShop.id } }), 17);
+    assert.equal((await full.db.webhookReceipt.findUniqueOrThrow({ where: { id: "earlier-outside-manifest" } })).attemptCount, 0);
+    await assert.rejects(runManifestBoundProductWebhookDrain(drainConfig, drainDeps));
+    console.log("MANIFEST_DRAIN_POSTGRES=PASS; RECEIPTS=20; PRODUCTS=17; EVENTS=20; OUTSIDE_CLAIMS=0; AUTH_REFRESH=0; CAS_WINNERS=1; QUEUE_ROLLBACK=PASS; CONCURRENT_SLOT_FENCE=PASS");
   } catch (error) {
     diagnostics.captureOriginal(error);
     originalFailure = error;

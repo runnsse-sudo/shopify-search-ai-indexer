@@ -18,6 +18,7 @@ import { fetchProductForIndexing, type AdminGraphqlClient } from "./shopify-prod
 import { acquireWebhookReceiptWithClient } from "./webhook-idempotency.server";
 import { runSerializableTransactionWithRetry } from "./serializable-transaction-retry.server";
 import { completeProductWebhookWithClient, type ProductWebhookClaim } from "./product-webhook-store";
+import { drainNeed, beginDrainTransaction, finishDrainTransaction, type DrainEffectState } from "./product-webhook-drain-contract";
 
 type ProductWebhookIdentity = {
   webhookId: string;
@@ -44,16 +45,20 @@ export async function processProductDetection(input: {
   metadata?: Record<string, string | number | boolean | null>;
   webhook?: ProductWebhookIdentity;
   durableClaim?: ProductWebhookClaim;
+  drainEffects?: DrainEffectState;
 }) {
+  if (input.drainEffects) drainNeed(input.durableClaim?.drainMember && !input.webhook && !input.scanRunId && input.drainEffects.spec.manifest.some(m => m.id === input.durableClaim!.id && m.webhookId === input.durableClaim!.drainMember!.webhookId && m.shopId === input.durableClaim!.shopId && m.shopifyProductGid === input.productGid && m.topic === input.durableClaim!.drainMember!.topic));
   if (input.durableClaim && input.webhook) throw new Error("INVALID_WEBHOOK_PROCESSING_MODE");
   const shop = input.durableClaim
     ? await prisma.shop.findUniqueOrThrow({ where: { id: input.durableClaim.shopId } })
     : await ensureShop(input.shopDomain);
   if (input.durableClaim && shop.domain !== input.shopDomain) throw new Error("INVALID_WEBHOOK_SHOP");
+  if (input.drainEffects) drainNeed(shop.primaryDomain === input.drainEffects.spec.context.primaryDomain);
   try {
     const product = await fetchProductForIndexing(input.admin, input.productGid);
     const snapshotObservedAt = new Date();
     if (!product) throw new Error("Product was not returned by Admin GraphQL");
+    if (input.drainEffects) drainNeed(product.id === input.productGid);
     const shopifyUpdatedAt = parseShopifyUpdatedAt(product.updatedAt);
     // Durable mode ignores claim/caller hints. Only current DB cache or a fresh fallback.
     const fetchedDomain = Boolean(input.durableClaim && !shop.primaryDomain);
@@ -82,6 +87,7 @@ export async function processProductDetection(input: {
             data: { primaryDomain },
           });
         const currentShop = await tx.shop.findUniqueOrThrow({ where: { id: shop.id } });
+        if (input.drainEffects) drainNeed(currentShop.domain === input.shopDomain);
         selectedDomain = currentShop.primaryDomain;
       }
       const selectedCandidateUrl = input.durableClaim
@@ -109,6 +115,7 @@ export async function processProductDetection(input: {
       const existing = await tx.productIndexState.findUnique({
         where: { shopId_shopifyProductGid: { shopId: shop.id, shopifyProductGid: product.id } },
       });
+      const drainFence = input.drainEffects ? await beginDrainTransaction(input.drainEffects, tx, existing, shop.id, product.id, selectedDomain) : undefined;
       const snapshotOrder = decideProductSnapshotOrder({
         existing,
         incomingShopifyUpdatedAt: shopifyUpdatedAt,
@@ -122,7 +129,7 @@ export async function processProductDetection(input: {
         if (input.scanRunId) {
           await tx.productIndexState.update({ where: { id: existing.id }, data: scanUpdate });
         }
-        await tx.indexEvent.create({
+        const event = await tx.indexEvent.create({
           data: {
             shopId: shop.id,
             productIndexStateId: existing.id,
@@ -145,7 +152,7 @@ export async function processProductDetection(input: {
             },
           },
         });
-        return staleDetectionResult(existing.indexabilityState);
+        return { ...staleDetectionResult(existing.indexabilityState), ...(drainFence ? { drainEffects: await finishDrainTransaction(drainFence, tx, event.id) } : {}) };
       }
       const contentChanged = existing?.contentHash !== newHash;
       const wasIndexable = existing?.indexabilityState === "INDEXABLE" && !existing.deletedAt;
@@ -196,7 +203,7 @@ export async function processProductDetection(input: {
         },
       });
 
-      await tx.indexEvent.create({
+      const event = await tx.indexEvent.create({
         data: {
           shopId: shop.id,
           productIndexStateId: state.id,
@@ -219,7 +226,7 @@ export async function processProductDetection(input: {
 
       let queued = false;
       if (transition?.action === "DEINDEX") {
-        await cancelPendingForProductWithClient(tx, shop.id, product.id, "INDEX");
+        await cancelPendingForProductWithClient(tx, shop.id, product.id, "INDEX", drainFence);
         if (existing?.canonicalUrl) {
           const enqueued = await enqueueProductWithClient(tx, {
             shopId: shop.id,
@@ -228,11 +235,11 @@ export async function processProductDetection(input: {
             url: existing.canonicalUrl,
             reason: transition.reason,
             action: "DEINDEX",
-          });
+          }, drainFence);
           queued = enqueued.created;
         }
       } else if (transition?.action === "INDEX") {
-        await cancelPendingForProductWithClient(tx, shop.id, product.id, "DEINDEX");
+        await cancelPendingForProductWithClient(tx, shop.id, product.id, "DEINDEX", drainFence);
         const enqueued = await enqueueProductWithClient(tx, {
           shopId: shop.id,
           productIndexStateId: state.id,
@@ -240,14 +247,14 @@ export async function processProductDetection(input: {
           url: product.onlineStoreUrl,
           reason: transition.reason,
           action: "INDEX",
-        });
+        }, drainFence);
         queued = enqueued.created;
       }
 
       if (queued) {
         await tx.productIndexState.update({ where: { id: state.id }, data: { lastQueuedAt: new Date() } });
       }
-      return { changed: contentChanged || indexabilityChanged, queued, stale: false, indexabilityState };
+      return { changed: contentChanged || indexabilityChanged, queued, stale: false, indexabilityState, ...(drainFence ? { drainEffects: await finishDrainTransaction(drainFence, tx, event.id) } : {}) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   } catch (error) {
     // Durable worker owns sanitized failure transitions; never write an unfenced/raw error here.
