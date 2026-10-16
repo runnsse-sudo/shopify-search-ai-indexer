@@ -1,4 +1,5 @@
 import { setTimeout, clearTimeout } from "node:timers";
+import { parseProductWebhookDrain, drainNeed } from "./product-webhook-drain-contract.ts";
 
 // Whole enabled invocation, starting BEFORE lease acquisition (including disconnect).
 // Fixed, not environment-configurable: 240s + 60s <= every allowed lease/stale TTL.
@@ -37,12 +38,14 @@ function integer(
 }
 
 export function productWebhookConfig(env: Record<string, string | undefined>) {
+  const drain = parseProductWebhookDrain(env);
+  if (drain) drainNeed((env.PRODUCT_WEBHOOK_WORKER_MAX_ITEMS === undefined || env.PRODUCT_WEBHOOK_WORKER_MAX_ITEMS === "20") && (env.PRODUCT_WEBHOOK_WORKER_INTER_ITEM_DELAY_MS === undefined || env.PRODUCT_WEBHOOK_WORKER_INTER_ITEM_DELAY_MS === "1000"), "DRAIN_CONFIG_INVALID");
   const enabled = env.PRODUCT_WEBHOOK_WORKER_ENABLED;
   if (enabled !== undefined && enabled !== "true" && enabled !== "false")
     throw new Error("INVALID_PRODUCT_WEBHOOK_CONFIG");
   return {
     enabled: enabled === "true",
-    maxItems: integer(env.PRODUCT_WEBHOOK_WORKER_MAX_ITEMS, 10, 1, 25),
+    maxItems: integer(env.PRODUCT_WEBHOOK_WORKER_MAX_ITEMS, drain ? 20 : 10, 1, 25),
     interItemDelayMs: integer(
       env.PRODUCT_WEBHOOK_WORKER_INTER_ITEM_DELAY_MS,
       1000,
@@ -57,6 +60,7 @@ export function productWebhookConfig(env: Record<string, string | undefined>) {
       3600000,
     ),
     maxItemsPerShop: 2,
+    drain,
   };
 }
 export type ProductWebhookConfig = ReturnType<typeof productWebhookConfig>;

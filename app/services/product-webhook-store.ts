@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import { drainNeed, type DrainMember, type DrainSpec } from "./product-webhook-drain-contract.ts";
 import {
   WebhookOwnershipLostError,
   productWebhookFailure,
@@ -17,6 +18,7 @@ export type ProductWebhookClaim = {
   claimedAt: Date;
   attemptCount: number;
   lease: ProductWebhookLease;
+  drainMember?: DrainMember;
 };
 
 export async function acceptProductWebhookWithClient(
@@ -117,6 +119,7 @@ export async function releaseProductWebhookLeaseWithClient(
 
 export function productWebhookClaimWhere(claim: ProductWebhookClaim) {
   return {
+    ...(claim.drainMember ?? {}),
     id: claim.id,
     shopId: claim.shopId,
     status: "PROCESSING" as const,
@@ -189,6 +192,16 @@ export async function claimProductWebhookWithClient(
       ? { exhausted: true as const, shopId: row.shopId }
       : null;
   }
+  return commitProductWebhookClaim(client, row, lease, now, where);
+}
+
+async function commitProductWebhookClaim(
+  client: Client,
+  row: Prisma.WebhookReceiptGetPayload<{ include: { shop: true } }>,
+  lease: ProductWebhookLease,
+  now: Date,
+  where: Prisma.WebhookReceiptWhereInput,
+) {
   const token = randomUUID();
   const result = await client.webhookReceipt.updateMany({
     where,
@@ -210,6 +223,27 @@ export async function claimProductWebhookWithClient(
     lease,
     staleRecovered: row.status === "PROCESSING",
   };
+}
+
+function assertDrainReceipt(row: Prisma.WebhookReceiptGetPayload<{ include: { shop: true } }> | null, member: DrainMember, now: Date) {
+  drainNeed(row && ["id", "shopId", "webhookId", "shopifyProductGid", "topic"].every(k => row[k as keyof typeof row] === member[k as keyof DrainMember]) && row.status === "PENDING" && row.attemptCount === 0 && row.claimToken === null && row.claimedAt === null && row.nextAttemptAt <= now && row.shop.productWebhookNextAttemptAt <= now && row.shop.primaryDomain, "DRAIN_MANIFEST_DRIFT");
+  return row;
+}
+export async function preflightProductWebhookDrainWithClient(client: Client, spec: DrainSpec, now: Date) {
+  const rows = await client.webhookReceipt.findMany({ where: { id: { in: spec.manifest.map(r => r.id) } }, include: { shop: true }, take: 21 });
+  drainNeed(rows.length === 20 && new Set(rows.map(r => r.id)).size === 20, "DRAIN_MANIFEST_DRIFT");
+  for (const member of spec.manifest) assertDrainReceipt(rows.find(r => r.id === member.id) ?? null, member, now);
+  rows.sort((a, b) => +a.nextAttemptAt - +b.nextAttemptAt || +a.receivedAt - +b.receivedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  drainNeed(rows[0].shop.primaryDomain === spec.context.primaryDomain && rows[0].shop.domain === spec.context.domain, "DRAIN_SCOPE_DRIFT");
+  return { order: rows.map(r => spec.manifest.find(m => m.id === r.id)!), shop: rows[0].shop };
+}
+export async function claimManifestProductWebhookWithClient(client: Client, spec: DrainSpec, member: DrainMember, lease: ProductWebhookLease, now: Date, expectedDomain: string) {
+  drainNeed(spec.manifest.some(r => r.id === member.id && r.shopId === member.shopId && r.webhookId === member.webhookId && r.shopifyProductGid === member.shopifyProductGid && r.topic === member.topic), "DRAIN_MANIFEST_DRIFT");
+  await guardProductWebhookLeaseWithClient(client, lease, now);
+  const row = assertDrainReceipt(await client.webhookReceipt.findUnique({ where: { id: member.id }, include: { shop: true } }), member, now);
+  drainNeed(row.shop.domain === expectedDomain && expectedDomain === spec.context.domain, "AUTH_SESSION_DRIFT");
+  const result = await commitProductWebhookClaim(client, row, lease, now, { ...member, status: "PENDING", attemptCount: 0, claimToken: null, claimedAt: null, nextAttemptAt: { lte: now }, shop: { productWebhookNextAttemptAt: { lte: now }, domain: expectedDomain, primaryDomain: spec.context.primaryDomain } });
+  drainNeed(result, "DRAIN_MANIFEST_DRIFT"); return { ...result, drainMember: member };
 }
 
 // Completion is executed INSIDE the product-state transaction. Any downstream failure rolls it back.

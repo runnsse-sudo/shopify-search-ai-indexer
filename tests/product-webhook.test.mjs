@@ -1,4 +1,4 @@
-/* eslint-env node */
+/* eslint-env node, es2020 */
 import assert from "node:assert/strict";
 import test from "node:test";
 import nodeProcess from "node:process";
@@ -52,7 +52,7 @@ const mockPlugin = {
       loader: "js",
       contents:
         args.path === "auth"
-          ? "export const authenticate = { webhook: async () => { if (globalThis.webhookAuth instanceof Error) throw globalThis.webhookAuth; return globalThis.webhookAuth; } }; export const unauthenticated = { admin: async (domain) => { if (globalThis.webhookOfflineAdmin) return globalThis.webhookOfflineAdmin(domain); throw new Error('unexpected offline admin'); } };"
+          ? "export const authenticate = { webhook: async () => { if (globalThis.webhookAuth instanceof Error) throw globalThis.webhookAuth; return globalThis.webhookAuth; } }; export const sessionStorage = {loadSession: async () => { throw new Error('unexpected session load'); }}; export const unauthenticated = { admin: async (domain) => { if (globalThis.webhookOfflineAdmin) return globalThis.webhookOfflineAdmin(domain); throw new Error('unexpected offline admin'); } };"
           : "export default new Proxy({}, {get: (_, key) => globalThis.webhookDB[key]});",
     }));
   },
@@ -174,6 +174,9 @@ function runner(f, admin, time = now()) {
 }
 
 test("configuration is default-disabled, strict and bounded; backoff finite", () => {
+  assert.equal(productWebhookConfig({}).drain, null);
+  assert.equal(productWebhookConfig({}).maxItemsPerShop, 2);
+  assert.throws(() => productWebhookConfig({ PRODUCT_WEBHOOK_DRAIN_MODE: "manifest-once-v1" }));
   assert.equal(productWebhookConfig({}).enabled, false);
   for (const [key, value] of [
     ["ENABLED", "1"],

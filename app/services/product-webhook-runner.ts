@@ -2,13 +2,17 @@ import {
   WebhookOwnershipLostError,
   classifyProductWebhookError,
   type ProductWebhookConfig,
+  PRODUCT_WEBHOOK_HARD_LIMIT_MS,
 } from "./product-webhook-control.ts";
 import type {
   ProductWebhookLease,
   claimProductWebhookWithClient,
   failProductWebhookWithClient,
+  claimManifestProductWebhookWithClient,
+  preflightProductWebhookDrainWithClient,
 } from "./product-webhook-store.ts";
 import type { AdminGraphqlClient } from "./shopify-product.server.ts";
+import { ProductWebhookDrainBlocked, drainNeed, createDrainEffectState, commitDrainEffect, type DrainMember, type DrainEffectState, type DrainCommittedEffect } from "./product-webhook-drain-contract.ts";
 
 type Claimed = NonNullable<
   Awaited<ReturnType<typeof claimProductWebhookWithClient>>
@@ -43,6 +47,7 @@ export async function runProductWebhookWorker(
   config: ProductWebhookConfig,
   deps: ProductWebhookRunnerDependencies,
 ) {
+  drainNeed(!config.drain, "DRAIN_MODE_DISPATCH_REQUIRED");
   if (!config.enabled) {
     deps.log("product_webhook_worker_disabled");
     return;
@@ -139,4 +144,56 @@ export async function runProductWebhookWorker(
     retries,
     failed,
   });
+}
+
+export type ProductWebhookDrainDependencies = Omit<ProductWebhookRunnerDependencies, "claim" | "admin" | "process"> & {
+  preflight: () => ReturnType<typeof preflightProductWebhookDrainWithClient>;
+  auth: (shop: Awaited<ReturnType<typeof preflightProductWebhookDrainWithClient>>["shop"]) => Promise<{ admin: AdminGraphqlClient; check: () => Promise<void> }>;
+  claim: (member: DrainMember, lease: ProductWebhookLease, now: Date, expectedDomain: string) => ReturnType<typeof claimManifestProductWebhookWithClient>;
+  process: (work: Work, admin: AdminGraphqlClient, effects: DrainEffectState) => Promise<{ drainEffects?: DrainCommittedEffect }>;
+};
+const drainStopCodes = new Set(["DRAIN_SCOPE_DRIFT", "DRAIN_CONFIG_INVALID", "DRAIN_MANIFEST_DRIFT", "DRAIN_STOPPED", "DRAIN_INCOMPLETE", "AUTH_BLOCKED", "AUTH_REFRESH_REQUIRED", "AUTH_SCOPE_MISMATCH", "AUTH_SESSION_DRIFT", "AUTH_QUERY_BLOCKED", "AUTH_DOMAIN_DRIFT"]);
+export async function runManifestBoundProductWebhookDrain(config: ProductWebhookConfig, deps: ProductWebhookDrainDependencies) {
+  drainNeed(config.drain, "DRAIN_CONFIG_INVALID");
+  if (!config.enabled) { deps.log("product_webhook_worker_disabled"); return; }
+  const spec = config.drain, effects = createDrainEffectState(spec);
+  const started = +deps.now();
+  let lease: ProductWebhookLease | null = null, claimed = 0, completed = 0, retries = 0, failed = 0;
+  let reason = "DRAIN_INCOMPLETE";
+  const stop = () => { const elapsed = +deps.now() - started; drainNeed(!deps.shouldStop() && Number.isFinite(elapsed) && elapsed >= 0 && elapsed < PRODUCT_WEBHOOK_HARD_LIMIT_MS, "DRAIN_STOPPED"); };
+  try {
+    stop(); const initial = await deps.preflight();
+    const auth = await deps.auth(initial.shop); stop();
+    lease = await deps.acquireLease();
+    if (!lease) throw new ProductWebhookDrainBlocked("LEASE_BUSY");
+    const fresh = await deps.preflight();
+    drainNeed(fresh.order.length === 20 && fresh.order.every((m, i) => m.id === initial.order[i].id), "DRAIN_MANIFEST_DRIFT");
+    for (const member of fresh.order) {
+      stop(); await auth.check(); stop();
+      const work = await deps.claim(member, lease, deps.now(), initial.shop.domain); claimed++;
+      deps.log("product_webhook_drain_claimed", { ordinal: spec.manifest.findIndex(r => r.id === member.id) + 1, manifestSha256: spec.sha256 });
+      try {
+        await deps.guard(work, deps.now()); stop();
+        const result = await deps.process(work, auth.admin, effects);
+        drainNeed(result.drainEffects, "DRAIN_SCOPE_DRIFT");
+        commitDrainEffect(effects, result.drainEffects); completed++;
+        deps.log("product_webhook_drain_completed", { ordinal: spec.manifest.findIndex(r => r.id === member.id) + 1, manifestSha256: spec.sha256 });
+      } catch (error) {
+        if (error instanceof WebhookOwnershipLostError) throw error;
+        const classified = classifyProductWebhookError(error);
+        const result = await deps.fail(work, classified, deps.now());
+        if (result.status === "RETRY") retries++; else failed++;
+        throw error;
+      }
+      if (completed < 20) { stop(); await deps.delay(1000); }
+    }
+    drainNeed(claimed === 20 && completed === 20 && retries === 0 && failed === 0, "DRAIN_INCOMPLETE");
+    reason = "COMPLETED";
+  } catch (error) {
+    reason = error instanceof WebhookOwnershipLostError ? "OWNERSHIP_LOST" : error instanceof ProductWebhookDrainBlocked && (drainStopCodes.has(error.code) || error.code === "LEASE_BUSY") ? error.code : "WORKER_FAILURE";
+    throw new ProductWebhookDrainBlocked(reason);
+  } finally {
+    try { if (lease) await deps.releaseLease(lease); }
+    finally { deps.log("product_webhook_drain_stopped", { manifestSha256: spec.sha256, claimed, completed, retries, failed, reason }); }
+  }
 }
