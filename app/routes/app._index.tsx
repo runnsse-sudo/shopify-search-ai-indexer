@@ -2,7 +2,10 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
+import type { ScanRun } from "@prisma/client";
 import { authenticate } from "../shopify.server";
+import { IndexingSummary } from "../components/indexing-summary";
+import { readIndexingSummary } from "../services/indexing-dashboard";
 import {
   cancelInitialScan,
   pauseInitialScan,
@@ -11,21 +14,35 @@ import {
   startInitialScan,
 } from "../services/initial-scan.server";
 
+const scanSelect = {
+  id: true, status: true, productsProcessed: true, productsIndexable: true,
+  productsNonIndexable: true, productsChanged: true, queueItemsCreated: true,
+  errorsCount: true, lastProgressAt: true,
+} as const;
+
+function scanSummary(scan: Pick<ScanRun, keyof typeof scanSelect>) {
+  return {
+    id: scan.id, status: scan.status, productsProcessed: scan.productsProcessed,
+    productsIndexable: scan.productsIndexable, productsNonIndexable: scan.productsNonIndexable,
+    productsChanged: scan.productsChanged, queueItemsCreated: scan.queueItemsCreated,
+    errorsCount: scan.errorsCount, lastProgressAt: scan.lastProgressAt,
+  };
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const shop = await prisma.shop.findUnique({ where: { domain: session.shop } });
-  if (!shop) return { counts: { tracked: 0, indexable: 0, pending: 0, failed: 0, events: 0 }, recentEvents: [], scan: null };
-  const [tracked, indexable, pending, failed, events, recentEvents, scan] = await Promise.all([
+  const shop = await prisma.shop.findUnique({ where: { domain: session.shop }, select: { id: true } });
+  if (!shop) return { counts: { tracked: 0, indexable: 0, pending: 0, failed: 0, events: 0 }, recentEvents: [], scan: null, indexing: null };
+  const [tracked, indexable, indexing, events, recentEvents, scan] = await Promise.all([
     prisma.productIndexState.count({ where: { shopId: shop.id, deletedAt: null } }),
     prisma.productIndexState.count({ where: { shopId: shop.id, deletedAt: null, indexabilityState: "INDEXABLE" } }),
-    prisma.indexQueueItem.count({ where: { shopId: shop.id, status: "PENDING" } }),
-    prisma.indexQueueItem.count({ where: { shopId: shop.id, status: "FAILED" } }),
+    readIndexingSummary(prisma, shop.id),
     prisma.indexEvent.count({ where: { shopId: shop.id } }),
     prisma.indexEvent.findMany({ where: { shopId: shop.id }, orderBy: { receivedAt: "desc" }, take: 8,
-      select: { id: true, eventType: true, shopifyProductGid: true, meaningfulContentChanged: true, receivedAt: true, error: true } }),
-    prisma.scanRun.findFirst({ where: { shopId: shop.id }, orderBy: { createdAt: "desc" } }),
+      select: { id: true, eventType: true, shopifyProductGid: true, meaningfulContentChanged: true, receivedAt: true } }),
+    prisma.scanRun.findFirst({ where: { shopId: shop.id }, orderBy: { createdAt: "desc" }, select: scanSelect }),
   ]);
-  return { counts: { tracked, indexable, pending, failed, events }, recentEvents, scan };
+  return { counts: { tracked, indexable, pending: indexing.counts.PENDING, failed: indexing.counts.FAILED, events }, recentEvents, scan: scan ? scanSummary(scan) : null, indexing };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -34,18 +51,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(formData.get("intent") ?? "");
   const runId = String(formData.get("runId") ?? "");
   try {
-    if (intent === "start") return { scan: await startInitialScan(session.shop), error: null };
+    if (intent === "start") return { scan: scanSummary(await startInitialScan(session.shop)), error: null };
     if (!runId) return { scan: null, error: "A scan run is required." };
     if (intent === "continue") {
       const resumed = await resumeInitialScan(session.shop, runId);
-      return { scan: await runNextBatch({ admin, shopDomain: session.shop, runId: resumed.id }), error: null };
+      return { scan: scanSummary(await runNextBatch({ admin, shopDomain: session.shop, runId: resumed.id })), error: null };
     }
-    if (intent === "pause") return { scan: await pauseInitialScan(session.shop, runId), error: null };
-    if (intent === "cancel") return { scan: await cancelInitialScan(session.shop, runId), error: null };
+    if (intent === "pause") return { scan: scanSummary(await pauseInitialScan(session.shop, runId)), error: null };
+    if (intent === "cancel") return { scan: scanSummary(await cancelInitialScan(session.shop, runId)), error: null };
     return { scan: null, error: "Unknown scan action." };
-  } catch (error) {
-    console.error("Initial scan action failed", { shop: session.shop, intent, runId, error });
-    return { scan: null, error: error instanceof Error ? error.message : "Initial scan action failed." };
+  } catch {
+    console.error(JSON.stringify({ event: "initial_scan_action_failed", code: "SCAN_ACTION_FAILED" }));
+    return { scan: null, error: "The scan could not be updated. Refresh its status before trying again." };
   }
 };
 
@@ -54,7 +71,7 @@ function Metric({ label, value }: { label: string; value: number }) {
 }
 
 export default function Index() {
-  const { counts, recentEvents, scan } = useLoaderData<typeof loader>();
+  const { counts, recentEvents, scan, indexing } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const displayedScan = fetcher.data?.scan ?? scan;
   const busy = fetcher.state !== "idle";
@@ -69,19 +86,14 @@ export default function Index() {
   return (
     <s-page heading="Runn Search AI Indexer">
       <s-section heading="Search & AI Indexing">
-        <s-paragraph>Tracks meaningful public product changes and prepares durable internal indexing work. No external indexing providers are called in Phase 1.</s-paragraph>
+        <s-paragraph>Tracks meaningful public product changes and prepares durable indexing work. Provider submission and search engine inclusion are separate outcomes.</s-paragraph>
         <s-stack direction="inline" gap="base">
           <Metric label="Tracked products" value={counts.tracked} /><Metric label="Indexable products" value={counts.indexable} />
           <Metric label="Pending queue" value={counts.pending} /><Metric label="Failed queue items" value={counts.failed} /><Metric label="Events recorded" value={counts.events} />
         </s-stack>
       </s-section>
-      <s-section heading="Phase 1 status">
-        <s-unordered-list>
-          <s-list-item>Product create, update, and delete webhooks configured</s-list-item>
-          <s-list-item>Deterministic fingerprints gate indexing queue work</s-list-item>
-          <s-list-item>Resumable product scan service ready for a controlled trigger</s-list-item>
-          <s-list-item>Google, Bing, IndexNow, and AI audit providers: Not configured</s-list-item>
-        </s-unordered-list>
+      <s-section heading="Indexing overview">
+        {indexing ? <IndexingSummary summary={indexing} /> : <s-paragraph>No indexing data has been recorded yet.</s-paragraph>}
       </s-section>
       <s-section heading="Initial catalog scan">
         {displayedScan ? (
@@ -111,15 +123,18 @@ export default function Index() {
           <s-stack direction="block" gap="small-300">{recentEvents.map((event) => (
             <s-box key={event.id} padding="small-300" borderWidth="base" borderRadius="base">
               <s-paragraph>{event.shopifyProductGid} · {event.eventType} · {event.meaningfulContentChanged ? "meaningful change" : "no fingerprint change"} · {new Date(event.receivedAt).toLocaleString()}</s-paragraph>
-              {event.error ? <s-text>Processing error recorded</s-text> : null}
             </s-box>
           ))}</s-stack>
         )}
       </s-section>
-      <s-section slot="aside" heading="Integrations"><s-paragraph>External indexing providers are deliberately not configured.</s-paragraph></s-section>
-      <s-section slot="aside" heading="Indexability"><s-paragraph>Phase 1 requires active status and a valid Shopify Online Store URL. Deeper storefront checks are deferred.</s-paragraph></s-section>
+      <s-section slot="aside" heading="Integrations"><s-link href="/app/provider-settings">Review provider configuration</s-link><s-paragraph>Enabling a setting does not confirm worker execution or search engine inclusion.</s-paragraph></s-section>
+      <s-section slot="aside" heading="Indexability"><s-paragraph>Product eligibility and provider submission are separate checks. Use SEO Audit to review storefront issues.</s-paragraph></s-section>
     </s-page>
   );
 }
 
-export const headers: HeadersFunction = (headersArgs) => boundary.headers(headersArgs);
+export const headers: HeadersFunction = (headersArgs) => {
+  const result = new Headers(boundary.headers(headersArgs));
+  result.set("Cache-Control", "private, no-store");
+  return result;
+};
