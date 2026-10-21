@@ -140,3 +140,8 @@ jobs:
         run: npx --no-install prisma generate
       - name: Run PostgreSQL webhook integration
         run: npm run test:product-webhook:postgres
+
+      - name: Run product workspace PostgreSQL integration
+        env:
+          PRODUCT_WORKBENCH_POSTGRES_INTEGRATION: "1"
+        run: node --experimental-strip-types tests/product-workbench-postgres.integration.mjs
