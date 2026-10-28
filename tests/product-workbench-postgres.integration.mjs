@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { applyWorkbenchCommand, manualRequestId, parseWorkbenchCommand, workbenchOwner } from "../app/services/product-workbench.ts";
+import { applyWorkbenchCommand, manualRequestId, parseWorkbenchCommand, parseProductFilters, readProducts, workbenchOwner } from "../app/services/product-workbench.ts";
 
 // This test is prepared for the existing disposable hosted PostgreSQL job only.
 // Guard runs before importing Prisma, connecting, creating a schema or spawning a CLI.
@@ -68,10 +68,21 @@ async function main() {
     const originalNonce = queue.id === manualRequestId(shop.id, owner, nonce, product.id) ? nonce : "22222222-2222-4222-8222-222222222222";
     assert.equal((await run({ ...cmd, requestKey: originalNonce })).created, 0, "REPLAY_AFTER_COMPLETION");
     await assert.rejects(run({ ...cmd, products: [{ id: product.id, updatedAt: new Date(0) }] }), (e) => e.status === 409);
-    const protectedRow = await db.indexQueueItem.create({ data: { shopId: shop.id, shopifyProductGid: product.shopifyProductGid, provider: "INTERNAL", action: "INDEX", status: "PENDING", reason: "protected-manifest", dedupeKey: `${shop.id}|${product.shopifyProductGid}|INTERNAL|INDEX` } });
+    const protectedRow = await db.indexQueueItem.create({ data: { shopId: shop.id, productIndexStateId: product.id, shopifyProductGid: product.shopifyProductGid, provider: "INTERNAL", action: "INDEX", status: "PENDING", reason: "protected-manifest", dedupeKey: `${shop.id}|${product.shopifyProductGid}|INTERNAL|INDEX` } });
     assert.equal((await run({ ...cmd, requestKey: "33333333-3333-4333-8333-333333333333" })).created, 0);
     assert.deepEqual(await db.indexQueueItem.findUniqueOrThrow({ where: { id: protectedRow.id } }), protectedRow, "PROTECTED_ROW_UNCHANGED");
-    console.log("PRODUCT_WORKBENCH_POSTGRES=PASS; CONCURRENT_DEDUP=PASS; CANCEL_CLAIM_CAS=PASS; OWNERSHIP=PASS; STALE_SELECTION=PASS; REPLAY=PASS; PROTECTED_ROWS=PASS");
+    const emptyProduct = await db.productIndexState.create({ data: { shopId: shop.id, shopifyProductGid: "gid://shopify/Product/2", indexabilityState: "NOT_ACTIVE" } });
+    const failedProduct = await db.productIndexState.create({ data: { shopId: shop.id, shopifyProductGid: "gid://shopify/Product/3", indexabilityState: "NOT_ACTIVE" } });
+    await db.indexQueueItem.create({ data: { shopId: shop.id, productIndexStateId: failedProduct.id, shopifyProductGid: failedProduct.shopifyProductGid, provider: "INTERNAL", action: "INDEX", status: "FAILED", reason: "triage-fixture" } });
+    await db.indexQueueItem.create({ data: { shopId: shop.id, productIndexStateId: failedProduct.id, shopifyProductGid: failedProduct.shopifyProductGid, provider: "INTERNAL", action: "INDEX", status: "COMPLETED", reason: "triage-fixture", createdAt: new Date(Date.now() + 1000) } });
+    await db.indexQueueItem.create({ data: { shopId: other.id, productIndexStateId: emptyProduct.id, shopifyProductGid: emptyProduct.shopifyProductGid, provider: "INTERNAL", action: "INDEX", status: "FAILED", reason: "triage-fixture" } });
+    // Deliberately inconsistent cross-shop relation must not affect an owned product's history filter.
+    const read = (work) => readProducts(db, shop.domain, owner, parseProductFilters(new URLSearchParams({ work })));
+    assert.deepEqual((await read("FAILED")).items.map((p) => p.id), [failedProduct.id]);
+    assert.equal((await read("FAILED")).items[0].jobs[0].status, "COMPLETED", "HISTORY_FILTER_IS_NOT_LATEST_STATUS");
+    assert.ok((await read("NONE")).items.some((p) => p.id === emptyProduct.id));
+    assert.ok((await read("ACTIVE")).items.some((p) => p.id === product.id));
+    console.log("PRODUCT_WORKBENCH_POSTGRES=PASS; CONCURRENT_DEDUP=PASS; CANCEL_CLAIM_CAS=PASS; OWNERSHIP=PASS; STALE_SELECTION=PASS; REPLAY=PASS; PROTECTED_ROWS=PASS; TRIAGE_RELATION_FILTERS=PASS");
   } finally {
     if (db) await db.$disconnect();
     try { await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); } finally { await admin.$disconnect(); }

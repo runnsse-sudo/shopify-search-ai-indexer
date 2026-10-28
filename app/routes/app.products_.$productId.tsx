@@ -26,7 +26,7 @@ export default function ProductDetail() {
     <s-section heading="Recorded product status">
       <s-paragraph>{p.gid} · {p.state} · {p.productStatus ?? "Unknown"}</s-paragraph>
       <s-paragraph>{p.deleted ? "Deletion recorded" : p.published ? "Publication recorded" : "Publication unverified"}. Last recorded indexing: {indexingDate(p.lastIndexedAt)}.</s-paragraph>
-      <s-paragraph>{p.eligible ? "Eligible for internal preparation from the product workspace." : "Not currently eligible for internal preparation."} Eligibility is rechecked when submitting. Search engine inclusion is unverified.</s-paragraph>
+      <s-paragraph>{p.eligibilityReason ?? "Eligible for internal preparation from the product workspace."} Eligibility is rechecked when submitting. Search engine inclusion is unverified.</s-paragraph>
       <s-link href="/app/products">Return to product workspace</s-link>
     </s-section>
     <s-section heading="Recent indexing requests">

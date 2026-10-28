@@ -96,4 +96,45 @@ test("detail unknown product is404 and response headers preserve SDK and no-stor
   reset(); state.products = []; await assert.rejects(detail.loader(args("/app/products/foreign", { productId: "foreign" })), (e) => e.status === 404);
   for (const route of [list, detail]) { const headers = route.headers({}); assert.equal(headers.get("Cache-Control"), "private, no-store"); assert.equal(headers.get("X-Boundary-Fixture"), "preserved"); }
 });
+test("CSV loader authenticates and exports only the bounded visible page without any write", async () => {
+  reset(); state.products[0].title = '=PRIVATE_FORMULA()';
+  state.products[0].responseBody = "SECRET_BODY";
+  const response = await list.loader(args(`/app/products?work=FAILED&cursor=${encodeURIComponent(`${now.toISOString()}~p9`)}&format=csv`));
+  assert.equal(response.status, 200); assert.equal(state.authCalls, 1);
+  assert.equal(response.headers.get("Content-Type"), "text/csv; charset=utf-8");
+  assert.equal(response.headers.get("Cache-Control"), "private, no-store");
+  assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+  assert.match(response.headers.get("Content-Disposition"), /attachment/);
+  const csv = await response.text(); assert.match(csv, /"'=PRIVATE_FORMULA/); assert.doesNotMatch(csv, /SECRET_BODY|canonicalUrl|manual-index/);
+  assert.deepEqual(state.calls.map((c) => c.name), ["shop", "products"]);
+  assert.equal(state.calls[1].args.where.queueItems.some.status, "FAILED");
+  assert.ok(state.calls[1].args.where.AND);
+});
+test("export rejects invalid formats before DB, preserves authentication and has an empty HEAD body", async () => {
+  for (const format of ["json", "csv&format=csv", ""]) {
+    reset(); await assert.rejects(list.loader(args(`/app/products?format=${format}`)), (e) => e.status === 400); assert.equal(state.calls.length, 0);
+  }
+  reset(); state.authError = true;
+  await assert.rejects(list.loader(args("/app/products?format=csv")), (e) => e.status === 401); assert.equal(state.calls.length, 0);
+  reset(); const response = await list.loader({ request: request("/app/products?format=csv", { method: "HEAD" }), params: {} });
+  assert.equal(await response.text(), "");
+});
+test("SSR preserves history filters and current export cursor but removes cursor on first-page link", async () => {
+  reset(); const cursor = `${now.toISOString()}~p9`;
+  const html = await render(list, `/app/products?q=Safe&state=INDEXABLE&work=FAILED&cursor=${encodeURIComponent(cursor)}`, "/app/products");
+  assert.match(html, /Has failed request history/); assert.match(html, /Select up to 20 eligible products/);
+  assert.match(html, /History filters match any recorded request/);
+  const download = html.match(/<a href="([^"]+)" download/)[1].replaceAll("&amp;", "&");
+  const params = new URL(download, "https://app.example").searchParams;
+  assert.equal(params.get("cursor"), cursor); assert.equal(params.get("work"), "FAILED"); assert.equal(params.get("q"), "Safe"); assert.equal(params.get("format"), "csv");
+  assert.match(html, /href="\/app\/products\?q=Safe&amp;state=INDEXABLE&amp;work=FAILED">Newest matching products/);
+});
+test("triage never enables writes and eligibility reason appears in list and detail", async () => {
+  reset(); state.products[0].published = false;
+  for (const [route, path, pattern] of [[list, "/app/products?work=ACTIVE", "/app/products"], [detail, "/app/products/p1", "/app/products/:productId"]]) {
+    assert.match(await render(route, path, pattern), /Publication is not confirmed/);
+  }
+  assert.equal((await list.action(post())).init.status, 403);
+  assert.equal(state.calls.some((c) => ["transaction", "create", "cancel"].includes(c.name)), false);
+});
 test.after(() => { delete process.env.PRODUCT_WORKBENCH_QUEUE_ACTIONS_ENABLED; delete globalThis.productRouteFixture; });
