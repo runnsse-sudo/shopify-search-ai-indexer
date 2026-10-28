@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { createPendingIntentKey } from "./index-queue-intent.ts";
 import { attemptDiagnostic, parseQueueFilters } from "./indexing-dashboard.ts";
-import { MAX_PRODUCT_SELECTION, PRODUCT_PAGE_SIZE, PRODUCT_STATES } from "./product-workbench.shared.ts";
+import { MAX_PRODUCT_SELECTION, PRODUCT_PAGE_SIZE, PRODUCT_STATES, PRODUCT_WORK_FILTERS } from "./product-workbench.shared.ts";
 const idPattern = /^[a-zA-Z0-9_-]{1,80}$/;
 const noncePattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -78,12 +78,14 @@ export async function readWorkbenchCommand(request: Request) {
 }
 
 export function parseProductFilters(params: URLSearchParams) {
-  for (const key of ["q", "state", "cursor"]) if (params.getAll(key).length > 1) throw new WorkbenchError("INVALID_FILTER");
+  for (const key of ["q", "state", "cursor", "work"]) if (params.getAll(key).length > 1) throw new WorkbenchError("INVALID_FILTER");
+  const work = params.get("work") ?? "";
+  if (work && !PRODUCT_WORK_FILTERS.includes(work as typeof PRODUCT_WORK_FILTERS[number])) throw new WorkbenchError("INVALID_FILTER");
   const q = (params.get("q") ?? "").trim();
   const state = params.get("state") ?? "";
   if (q.length > 100 || [...q].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) || (state && !PRODUCT_STATES.includes(state as typeof PRODUCT_STATES[number]))) throw new WorkbenchError("INVALID_FILTER");
   const cursor = parseQueueFilters(new URLSearchParams(params.has("cursor") ? { cursor: params.get("cursor")! } : {})).cursor;
-  return { q, state: state as "" | typeof PRODUCT_STATES[number], cursor };
+  return { q, state: state as "" | typeof PRODUCT_STATES[number], work: work as "" | typeof PRODUCT_WORK_FILTERS[number], cursor };
 }
 
 const productSelect = {
@@ -100,14 +102,21 @@ const queueSelect = {
   } },
 } satisfies Prisma.IndexQueueItemSelect;
 
-export function productEligibility(product: Product, primaryDomain: string | null) {
-  if (product.deletedAt || product.productStatus !== "ACTIVE" || product.published !== true || product.indexabilityState !== "INDEXABLE") return false;
+export function productEligibilityReason(product: Product, primaryDomain: string | null) {
+  if (product.deletedAt) return "Deletion recorded";
+  if (product.productStatus !== "ACTIVE") return "Product is not recorded as active";
+  if (product.published !== true) return "Publication is not confirmed";
+  if (product.indexabilityState !== "INDEXABLE") return "Product is not recorded as indexable";
   try {
     const target = new URL(product.canonicalUrl ?? "");
     const primary = new URL(primaryDomain?.includes("://") ? primaryDomain : `https://${primaryDomain ?? ""}`);
-    return primary.protocol === "https:" && !primary.username && !primary.password && primary.pathname === "/" && !primary.search && !primary.hash &&
+    const valid = primary.protocol === "https:" && !primary.username && !primary.password && primary.pathname === "/" && !primary.search && !primary.hash &&
       target.protocol === "https:" && target.origin === primary.origin && !target.username && !target.password && !target.search && !target.hash && /^\/products\/[^/]+$/.test(target.pathname);
-  } catch { return false; }
+    return valid ? null : "Verified same-domain product URL is required";
+  } catch { return "Verified same-domain product URL is required"; }
+}
+export function productEligibility(product: Product, primaryDomain: string | null) {
+  return productEligibilityReason(product, primaryDomain) === null;
 }
 
 type Client = Pick<Prisma.TransactionClient, "shop" | "productIndexState" | "indexQueueItem">;
@@ -118,6 +127,9 @@ export async function readProducts(client: Client, domain: string, owner: string
   const products = await client.productIndexState.findMany({
     where: { shopId: shop.id, ...(productId ? { id: productId } : {}),
       ...(filters.state ? { indexabilityState: filters.state } : {}),
+      ...(filters.work ? { queueItems: filters.work === "NONE" ? { none: { shopId: shop.id } } : { some: {
+        shopId: shop.id, status: filters.work === "ACTIVE" ? { in: ["PENDING", "PROCESSING"] } : "FAILED",
+      } } } : {}),
       ...(filters.q ? { OR: ["title", "handle", "shopifyProductGid"].map((field) => ({ [field]: { contains: filters.q, mode: "insensitive" } })) } : {}),
       ...(filters.cursor ? { AND: [{ OR: [{ createdAt: { lt: filters.cursor.createdAt } }, { createdAt: filters.cursor.createdAt, id: { lt: filters.cursor.id } }] }] } : {}),
     }, select: { ...productSelect, queueItems: { where: { shopId: shop.id }, take: productId ? 10 : 1, orderBy: [{ createdAt: "desc" }, { id: "desc" }], select: queueSelect } },
@@ -129,7 +141,7 @@ export async function readProducts(client: Client, domain: string, owner: string
     if (p.shopId !== shop.id) throw new Error("WORKBENCH_SCOPE_MISMATCH");
     return { id: p.id, title: p.title, handle: p.handle, gid: p.shopifyProductGid, state: p.indexabilityState,
       productStatus: p.productStatus, published: p.published, deleted: Boolean(p.deletedAt), lastIndexedAt: p.lastIndexedAt,
-      updatedAt: p.updatedAt, eligible: productEligibility(p, shop.primaryDomain),
+      updatedAt: p.updatedAt, eligible: productEligibility(p, shop.primaryDomain), eligibilityReason: productEligibilityReason(p, shop.primaryDomain),
       jobs: p.queueItems.map((q) => {
         if (q.shopId !== shop.id || q.shopifyProductGid !== p.shopifyProductGid) throw new Error("WORKBENCH_SCOPE_MISMATCH");
         return { id: q.id, provider: q.provider, action: q.action, status: q.status, updatedAt: q.updatedAt,

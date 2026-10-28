@@ -1,5 +1,39 @@
 # Product workspace
 
+## Product triage and page export
+
+The workspace can combine title/handle/GID search and eligibility with request-history
+filters: any waiting/processing request, any failed request, or no recorded requests.
+These match requests linked to the product by its stored relation, with shop-scoped
+database relation filters applied before the existing stable
+25-row pagination. History filters match **any** request; the row still shows its
+latest request, so an old failure is not presented as a current failure. Deleted
+products remain visible with an explanation and cannot be selected.
+
+Eligibility explanations distinguish deletion, inactive product, unconfirmed
+publication, non-indexable state and missing/unverified same-domain product URL.
+No raw URLs, exception bodies or credentials are returned in these explanations.
+The page-local shortcut replaces the selection with at most 20 eligible products
+from the currently displayed page. The default-off action gate, fresh selection
+versions, owner checks and atomic server rechecks remain unchanged. Selection
+does not enqueue work, and existing active work is still skipped on submission.
+
+An authenticated `GET /app/products?...&format=csv` downloads at most the current
+25-row page, including its search, history, eligibility and cursor filters. This is
+not an export of all products and involves no Shopify fetch or database mutation.
+Exports use a fixed filename, private/no-store and nosniff headers. Only explicit
+display metadata is exported; stored errors, URLs, provider bodies, ownership
+markers and credentials are excluded. Cells are capped at 512 characters, quotes
+are escaped and leading spreadsheet formula markers are neutralized. Dates are
+UTC and refer to recorded processing, not proven search-engine inclusion. Export
+is a fresh database read and can differ from a previously displayed page after
+concurrent updates. No background polling or additional services are introduced.
+
+Pure tests cover filter/query composition, route authentication, SSR links, export
+bounds/redaction/formula handling, and selection caps. The disposable PostgreSQL
+suite also covers history-vs-latest semantics and foreign relation isolation;
+running that integration remains restricted to the existing approved hosted job.
+
 `/app/products` shows persisted product eligibility and the latest queue outcome.
 Search matches title, handle or Shopify product GID; eligibility filters and stable
 creation-time/ID pagination return at most 25 products. Detail pages show at most
