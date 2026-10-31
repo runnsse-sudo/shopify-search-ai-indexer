@@ -1,5 +1,31 @@
 # Product workspace
 
+## My waiting requests
+
+`/app/requests` is a staff-owned work queue with search and stable 25-row pagination.
+It finds untouched manual INTERNAL/INDEX/PENDING requests even when they are older
+than a product's latest ten history rows. Both the request and its linked product
+are scoped to the authenticated shop. Staff ownership comes from the existing
+SDK-verified subject, never a caller-supplied owner or the shared offline session.
+Claims, retries, attempts, providers and manifest work are excluded by the database
+query before pagination. Browser responses contain display metadata only.
+
+The page is useful with actions disabled: it supports product/request links,
+search, pagination and an authenticated CSV copy of the currently filtered page.
+The export reuses the existing formula neutralization, cell/row caps, private
+no-store and nosniff behavior. No background refresh or external API is introduced.
+
+When the existing action flag is separately enabled, a merchant can select up to
+20 visible requests and cancel them together. The selection is cleared after
+navigation or revalidation. The server accepts only manual IDs paired with exact
+updatedAt versions; duplicate versions are compacted and conflicting versions or
+more than20 raw selections are rejected. All original cancellation guards still
+apply to every row. One conditional update runs inside the existing SERIALIZABLE
+transaction; a count mismatch throws409, rolling back the entire batch. No row is
+silently skipped or retried, and no worker or provider starts. The real PostgreSQL
+suite includes the mixed claimed/pending rollback case; local synthetic PASS does
+not claim that the hosted PostgreSQL test has run.
+
 ## Product triage and page export
 
 The workspace can combine title/handle/GID search and eligibility with request-history
@@ -79,8 +105,8 @@ Cancellation uses a conditional update scoped to authenticated shop and staff,
 the `manual_` namespace/ownership marker, INTERNAL/INDEX, PENDING, exact updatedAt,
 retryCount0, no claim and no attempts. It changes only status, completion time and
 releases the pending dedupe slot. Claimed/retried/provider/foreign/manifest work
-cannot be cancelled. Old manual requests outside the latest10 are still visible
-through the existing queue overview but are not given a cancellation button here.
+cannot be cancelled. Old manual requests outside the latest10 can be reviewed and
+cancelled through My waiting requests, using the same default-off operational gate.
 
 ## Validation and release separation
 
@@ -95,5 +121,6 @@ The guard self-test needs no database and creates no Docker resources.
 The release archive for main0241e867 is constructed from Git blobs, not this
 worktree. None of these feature files or CI changes belongs to that release.
 Schema, migrations, dependencies, worker files, Observer, REVIEW_REQUIRED and
-settingsVersion remain unchanged. Commit/push/PR/hosted execution, action
-activation, build and deployment are separate approval boundaries.
+settingsVersion remain unchanged. Local commits follow the task's authority under
+V5.0; push/PR/hosted execution, action activation and deployment require explicit
+external authority. A normal local application build does not deploy the result.

@@ -31,12 +31,26 @@ function date(value: string) {
 }
 export type WorkbenchCommand =
   | { intent: "enqueue"; requestKey: string; products: { id: string; updatedAt: Date }[] }
+  | { intent: "cancelMany"; requests: { id: string; updatedAt: Date }[] }
   | { intent: "cancel"; queueId: string; updatedAt: Date };
 
 export function parseWorkbenchCommand(params: URLSearchParams): WorkbenchCommand {
   const intent = params.get("intent");
-  const allowed = intent === "enqueue" ? ["intent", "requestKey", "product"] : ["intent", "queueId", "updatedAt"];
-  for (const key of params.keys()) if (!allowed.includes(key) || (key !== "product" && params.getAll(key).length !== 1)) throw new WorkbenchError("INVALID_SELECTION");
+  const allowed = intent === "enqueue" ? ["intent", "requestKey", "product"] : intent === "cancelMany" ? ["intent", "queue"] : ["intent", "queueId", "updatedAt"];
+  for (const key of params.keys()) if (!allowed.includes(key) || (!["product", "queue"].includes(key) && params.getAll(key).length !== 1)) throw new WorkbenchError("INVALID_SELECTION");
+  if (intent === "cancelMany") {
+    const values = params.getAll("queue");
+    if (!values.length || values.length > MAX_PRODUCT_SELECTION) throw new WorkbenchError("INVALID_SELECTION");
+    const unique = new Map<string, Date>();
+    for (const value of values) {
+      const [id, version, extra] = value.split("~");
+      if (!/^manual_[a-f0-9]{64}$/.test(id) || !version || extra !== undefined) throw new WorkbenchError("INVALID_SELECTION");
+      const updatedAt = date(version);
+      if (unique.has(id) && unique.get(id)!.getTime() !== updatedAt.getTime()) throw new WorkbenchError("INVALID_SELECTION");
+      unique.set(id, updatedAt);
+    }
+    return { intent, requests: [...unique].map(([id, updatedAt]) => ({ id, updatedAt })) };
+  }
   if (intent === "enqueue") {
     const requestKey = params.get("requestKey") ?? "";
     const values = params.getAll("product");
@@ -160,6 +174,19 @@ export async function applyWorkbenchCommand(client: Client, domain: string, owne
   const reason = reasonFor(owner);
   const shop = await client.shop.findUnique({ where: { domain }, select: { id: true, primaryDomain: true } });
   if (!shop) throw new WorkbenchError("NOT_FOUND", 404);
+  if (command.intent === "cancelMany") {
+    if (!command.requests.length || command.requests.length > MAX_PRODUCT_SELECTION ||
+      new Set(command.requests.map((q) => q.id)).size !== command.requests.length ||
+      command.requests.some((q) => !/^manual_[a-f0-9]{64}$/.test(q.id) || !Number.isFinite(q.updatedAt.getTime()))) throw new WorkbenchError("INVALID_SELECTION");
+    const result = await client.indexQueueItem.updateMany({ where: {
+      shopId: shop.id, reason, provider: "INTERNAL", action: "INDEX", status: "PENDING",
+      retryCount: 0, claimedAt: null, attempts: { none: {} },
+      OR: command.requests.map((q) => ({ id: q.id, updatedAt: q.updatedAt })),
+    }, data: { status: "CANCELLED", completedAt: now, dedupeKey: null } });
+    // The caller's existing SERIALIZABLE transaction rolls back all updates on a mismatch.
+    if (result.count !== command.requests.length) throw new WorkbenchError("STALE_OR_NOT_OWNED", 409);
+    return { created: 0, skipped: 0, cancelled: result.count };
+  }
   if (command.intent === "cancel") {
     const result = await client.indexQueueItem.updateMany({ where: {
       id: command.queueId, shopId: shop.id, reason, provider: "INTERNAL", action: "INDEX", status: "PENDING",

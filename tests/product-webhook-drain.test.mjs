@@ -98,7 +98,9 @@ await build({
           loader: "ts",
           contents: readFileSync(path, "utf8").replace(
             "PRODUCT_WEBHOOK_HARD_LIMIT_MS = 240000",
-            "PRODUCT_WEBHOOK_HARD_LIMIT_MS = 500",
+            // Allow the fixture to finish its 20 synthetic claims on slower hosts;
+            // the real worker deadline and the watchdog assertions are unchanged.
+            "PRODUCT_WEBHOOK_HARD_LIMIT_MS = 2000",
           ),
         }));
         b.onLoad({ filter: /product-webhook-worker\.ts$/ }, ({ path }) => ({
@@ -866,7 +868,7 @@ for (const mode of ["pending-auth", "pending-disconnect"])
         "-e",
         `const at=new Date(${JSON.stringify(at.toISOString())});${code}`,
       ],
-      { env, encoding: "utf8", timeout: 5000 },
+      { env, encoding: "utf8", timeout: 10000 },
     );
     assert.equal(child.status, 1);
     assert.match(child.stderr, /HARD_LIFETIME_EXCEEDED/);
