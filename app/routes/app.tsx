@@ -20,6 +20,7 @@ export default function App() {
       <s-app-nav>
         <s-link href="/app">Home</s-link>
         <s-link href="/app/products">Products</s-link>
+        <s-link href="/app/requests">My waiting requests</s-link>
         <s-link href="/app/indexing">Indexing jobs</s-link>
         <s-link href="/app/provider-settings">IndexNow provider</s-link>
         <s-link href="/app/sitemap-indexing">Sitemap & indexing</s-link>

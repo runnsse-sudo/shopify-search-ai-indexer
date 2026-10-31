@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { applyWorkbenchCommand, manualRequestId, parseWorkbenchCommand, parseProductFilters, readProducts, workbenchOwner } from "../app/services/product-workbench.ts";
+import { parseOwnedRequestFilters, readOwnedPendingRequests } from "../app/services/owned-requests.ts";
 
 // This test is prepared for the existing disposable hosted PostgreSQL job only.
 // Guard runs before importing Prisma, connecting, creating a schema or spawning a CLI.
@@ -82,7 +83,28 @@ async function main() {
     assert.equal((await read("FAILED")).items[0].jobs[0].status, "COMPLETED", "HISTORY_FILTER_IS_NOT_LATEST_STATUS");
     assert.ok((await read("NONE")).items.some((p) => p.id === emptyProduct.id));
     assert.ok((await read("ACTIVE")).items.some((p) => p.id === product.id));
-    console.log("PRODUCT_WORKBENCH_POSTGRES=PASS; CONCURRENT_DEDUP=PASS; CANCEL_CLAIM_CAS=PASS; OWNERSHIP=PASS; STALE_SELECTION=PASS; REPLAY=PASS; PROTECTED_ROWS=PASS; TRIAGE_RELATION_FILTERS=PASS");
+    const batchProducts = await Promise.all([4, 5].map((n) => db.productIndexState.create({ data: {
+      shopId: shop.id, shopifyProductGid: `gid://shopify/Product/${n}`, title: `Bulk ${n}`,
+      canonicalUrl: `https://workbench.example/products/bulk-${n}`, productStatus: "ACTIVE", published: true, indexabilityState: "INDEXABLE",
+    } })));
+    await run({ intent: "enqueue", requestKey: "44444444-4444-4444-8444-444444444444", products: batchProducts.map((p) => ({ id: p.id, updatedAt: p.updatedAt })) });
+    const batch = await db.indexQueueItem.findMany({ where: { productIndexStateId: { in: batchProducts.map((p) => p.id) } }, orderBy: { id: "asc" } });
+    assert.equal(batch.length, 2);
+    const bulk = (rows) => parseWorkbenchCommand(new URLSearchParams([["intent", "cancelMany"], ...rows.map((q) => ["queue", `${q.id}~${q.updatedAt.toISOString()}`])]));
+    await db.indexQueueItem.update({ where: { id: batch[1].id }, data: { status: "PROCESSING", claimedAt: new Date(), dedupeKey: null } });
+    await assert.rejects(run(bulk(batch)), (e) => e.status === 409);
+    assert.deepEqual(await db.indexQueueItem.findUniqueOrThrow({ where: { id: batch[0].id } }), batch[0], "BULK_PARTIAL_UPDATE_MUST_ROLL_BACK");
+    const restored = await db.indexQueueItem.update({ where: { id: batch[1].id }, data: { status: "PENDING", claimedAt: null, dedupeKey: batch[1].dedupeKey } });
+    const current = [batch[0], restored];
+    await assert.rejects(run(bulk(current), shop.domain, workbenchOwner(shop.domain, "43")), (e) => e.status === 409);
+    const mine = await readOwnedPendingRequests(db, shop.domain, owner, parseOwnedRequestFilters(new URLSearchParams({ q: "Bulk" })));
+    assert.deepEqual(new Set(mine.items.map((q) => q.id)), new Set(current.map((q) => q.id)), "OWNED_PENDING_QUERY");
+    assert.equal((await run(bulk(current))).cancelled, 2);
+    const terminal = await db.indexQueueItem.findMany({ where: { id: { in: current.map((q) => q.id) } } });
+    assert.ok(terminal.every((q) => q.status === "CANCELLED" && q.dedupeKey === null));
+    await assert.rejects(run(bulk(current)), (e) => e.status === 409);
+    assert.equal((await readOwnedPendingRequests(db, shop.domain, owner, parseOwnedRequestFilters(new URLSearchParams({ q: "Bulk" })))).items.length, 0);
+    console.log("PRODUCT_WORKBENCH_POSTGRES=PASS; CONCURRENT_DEDUP=PASS; CANCEL_CLAIM_CAS=PASS; OWNERSHIP=PASS; STALE_SELECTION=PASS; REPLAY=PASS; PROTECTED_ROWS=PASS; TRIAGE_RELATION_FILTERS=PASS; BULK_CANCEL_ROLLBACK=PASS; OWNED_PENDING_QUERY=PASS");
   } finally {
     if (db) await db.$disconnect();
     try { await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); } finally { await admin.$disconnect(); }

@@ -39,7 +39,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!workbenchActionsEnabled()) throw new WorkbenchError("ACTIONS_DISABLED", 403);
     const command = await readWorkbenchCommand(request);
     const result = await executeWorkbenchCommand(prisma, session.shop, workbenchOwner(session.shop, sessionToken.sub), command);
-    return data({ ok: true as const, result, message: command.intent === "cancel" ? "Your waiting internal request was cancelled." : `${result.created} internal requests prepared; ${result.skipped} already requested or active. No worker was started.` }, { headers: { "Cache-Control": "private, no-store" } });
+    return data({ ok: true as const, result, message: command.intent === "cancel" ? "Your waiting internal request was cancelled." : command.intent === "cancelMany" ? `${result.cancelled} of your waiting internal requests cancelled.` : `${result.created} internal requests prepared; ${result.skipped} already requested or active. No worker was started.` }, { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     const { status, message } = workbenchFailure(error);
     return data({ ok: false as const, result: null, message }, { status, headers: { "Cache-Control": "private, no-store" } });
@@ -76,6 +76,7 @@ export default function Products() {
       </Form>
     </s-section>
     <s-section heading="Select products for internal preparation">
+      <s-link href="/app/requests">Manage my waiting internal requests</s-link>
       <s-paragraph>{actionsEnabled ? "Only active, published, indexable products with a verified same-domain canonical URL can be selected. Existing active work is preserved." : "Queue actions are disabled. Separate operational approval is required before enabling them."}</s-paragraph>
       {fetcher.data ? <p role="status">{fetcher.data.message}</p> : null}
       <s-paragraph>History filters match any recorded request, while each row shows its latest request. A failed historical request does not mean the latest request failed.</s-paragraph>

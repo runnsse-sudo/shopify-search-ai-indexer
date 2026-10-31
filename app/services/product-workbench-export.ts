@@ -25,3 +25,10 @@ export function exportProductPage(items: ExportProduct[]) {
   ]);
   return rows.map((row) => row.map(cell).join(",")).join("\r\n") + "\r\n";
 }
+
+export function exportPendingRequestPage(items: { id: string; gid: string; title: string | null; createdAt: Date | string; updatedAt: Date | string }[]) {
+  if (items.length > PRODUCT_PAGE_SIZE) throw new Error("EXPORT_PAGE_LIMIT");
+  const rows: unknown[][] = [["Request ID", "Shopify product ID", "Title", "Requested at (UTC)", "Version (UTC)"]];
+  for (const q of items) rows.push([q.id, q.gid, q.title, new Date(q.createdAt).toISOString(), new Date(q.updatedAt).toISOString()]);
+  return rows.map((row) => row.map(cell).join(",")).join("\r\n") + "\r\n";
+}

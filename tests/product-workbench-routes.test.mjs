@@ -17,7 +17,7 @@ const record = (name, fn) => async (args) => { state.calls.push({ name, args });
 const client = {
   shop: { findUnique: record("shop", () => ({ id: "s1", primaryDomain: "shop.example" })) },
   productIndexState: { findMany: record("products", () => state.products) },
-  indexQueueItem: { findMany: record("queue", () => []), createMany: record("create", ({ data }) => ({ count: data.length })), updateMany: record("cancel", () => ({ count: state.cancelCount ?? 1 })) },
+  indexQueueItem: { findMany: record("queue", () => state.pendingRows ?? []), createMany: record("create", ({ data }) => ({ count: data.length })), updateMany: record("cancel", () => ({ count: state.cancelCount ?? 1 })) },
   $transaction: async (fn, options) => { state.calls.push({ name: "transaction", options }); if (state.txError) throw { code: state.txError, message: secret }; return fn(client); },
 };
 globalThis.productRouteFixture = { client, auth: async () => { state.authCalls++; if (state.authError) throw new Response(secret, { status: 401 }); return { session: { shop: "owned.myshopify.com", id: "offline_shared" }, sessionToken: { sub: "42" } }; } };
@@ -28,10 +28,11 @@ const plugins = [{ name: "product-workbench-auth-and-db-fixture", setup(b) {
   b.onLoad({ filter: /.*/, namespace: "fixture" }, ({ path }) => ({ loader: "js", contents: path === "db" ? "export default globalThis.productRouteFixture.client;" : path === "auth" ? "export const authenticate={admin:(...a)=>globalThis.productRouteFixture.auth(...a)};" : "export const boundary={headers:()=>({'X-Boundary-Fixture':'preserved'}),error:()=> 'Authentication required'};" }));
 } }];
 mkdirSync(new URL("../build-tests", import.meta.url), { recursive: true });
-for (const [entry, outfile] of [["app/routes/app.products.tsx", "product-list-route.mjs"], ["app/routes/app.products_.$productId.tsx", "product-detail-route.mjs"]]) await build({ entryPoints: [entry], outfile: `build-tests/${outfile}`, bundle: true, platform: "node", format: "esm", packages: "external", jsx: "automatic", plugins });
+for (const [entry, outfile] of [["app/routes/app.products.tsx", "product-list-route.mjs"], ["app/routes/app.products_.$productId.tsx", "product-detail-route.mjs"], ["app/routes/app.requests.tsx", "owned-requests-route.mjs"]]) await build({ entryPoints: [entry], outfile: `build-tests/${outfile}`, bundle: true, platform: "node", format: "esm", packages: "external", jsx: "automatic", plugins });
 stop();
 const list = await import("../build-tests/product-list-route.mjs");
 const detail = await import("../build-tests/product-detail-route.mjs");
+const owned = await import("../build-tests/owned-requests-route.mjs");
 const request = (path = "/app/products", init) => new Request(`https://app.example${path}`, init);
 const args = (path, params = {}) => ({ request: request(path), params });
 const post = (extra = {}) => ({ request: request("/app/products", { method: "POST", headers: { origin: "https://app.example", "content-type": "application/x-www-form-urlencoded", ...extra.headers }, body: extra.body ?? new URLSearchParams({ intent: "enqueue", requestKey: "11111111-1111-4111-8111-111111111111", product: `p1~${now.toISOString()}` }) }), params: {} });
@@ -138,3 +139,60 @@ test("triage never enables writes and eligibility reason appears in list and det
   assert.equal(state.calls.some((c) => ["transaction", "create", "cancel"].includes(c.name)), false);
 });
 test.after(() => { delete process.env.PRODUCT_WORKBENCH_QUEUE_ACTIONS_ENABLED; delete globalThis.productRouteFixture; });
+
+const manualId = (n) => `manual_${n.toString(16).padStart(64, "0")}`;
+const pendingRow = (n = 1) => ({ id: manualId(n), shopId: "s1", shopifyProductGid: `gid://shopify/Product/${n}`, createdAt: now, updatedAt: now, productIndexState: { id: `p${n}`, shopId: "s1", shopifyProductGid: `gid://shopify/Product/${n}`, title: "My waiting product" }, reason: "PRIVATE_OWNER", lastError: secret });
+const bulkPost = (...ids) => post({ body: new URLSearchParams([["intent", "cancelMany"], ...ids.map((n) => ["queue", `${manualId(n)}~${now.toISOString()}`])]) });
+
+test("my requests loader authenticates and projects only bounded owned pending metadata", async () => {
+  reset(); state.pendingRows = [pendingRow()]; const r = await owned.loader(args("/app/requests?q=waiting"));
+  assert.equal(state.authCalls, 1); assert.equal(r.data.items.length, 1); assert.equal(r.data.actionsEnabled, false);
+  const q = state.calls.find((c) => c.name === "queue").args;
+  assert.equal(q.where.shopId, "s1"); assert.match(q.where.reason, /^manual-index\/v1:[a-f0-9]{64}$/); assert.equal(q.where.productIndexState.is.shopId, "s1");
+  assert.doesNotMatch(JSON.stringify(r.data), /PRIVATE_OWNER|SYNTHETIC_PRIVATE_ERROR_BODY|manual-index/);
+  assert.deepEqual(state.calls.map((c) => c.name), ["shop", "queue"]);
+});
+test("my requests SSR offers an empty initial selection, page navigation and actionable links", async () => {
+  reset(); state.pendingRows = Array.from({ length: 26 }, (_, i) => pendingRow(i + 1));
+  const cursor = `${now.toISOString()}~p9`;const html = await render(owned, `/app/requests?q=waiting&cursor=${encodeURIComponent(cursor)}`, "/app/requests");
+  assert.match(html, /My waiting requests/); assert.match(html, /My waiting product/); assert.match(html, /Queue actions are disabled/); assert.match(html, /0 of 20 selected/);
+  assert.match(html, /Older requests/); assert.match(html, /\/app\/products\/p1/);assert.match(html, /all-or-nothing/);
+  assert.doesNotMatch(html, /PRIVATE_OWNER|SYNTHETIC_PRIVATE_ERROR_BODY|name="queue" value=/);
+  const download = html.match(/<a href="([^"]+)" download/)[1].replaceAll("&amp;", "&");
+  assert.equal(new URL(download, "https://app.example").searchParams.get("cursor"), cursor);
+});
+test("owned CSV authenticates, preserves current cursor and prevents formula/private-data leakage", async () => {
+  reset(); state.pendingRows = [pendingRow()];state.pendingRows[0].productIndexState.title = "=DANGEROUS()";
+  const r = await owned.loader(args(`/app/requests?q=waiting&cursor=${encodeURIComponent(`${now.toISOString()}~p9`)}&format=csv`));
+  assert.equal(state.authCalls, 1);assert.equal(r.headers.get("Cache-Control"), "private, no-store");assert.equal(r.headers.get("X-Content-Type-Options"), "nosniff");
+  const csv=await r.text();assert.match(csv,/"'=DANGEROUS/);assert.doesNotMatch(csv,/PRIVATE_OWNER|SYNTHETIC_PRIVATE_ERROR_BODY/);
+  assert.equal(state.calls.find((c)=>c.name==="queue").args.where.OR.length,2);
+});
+test("owned request methods, filters and auth errors stop before database access", async () => {
+  for(const path of ["/app/requests?format=json","/app/requests?owner=other","/app/requests?q=a&q=b"]){reset();await assert.rejects(owned.loader(args(path)),(e)=>e.status===400);assert.equal(state.calls.length,0);}
+  reset();await assert.rejects(owned.loader(post()),(e)=>e.status===405);assert.equal(state.calls.length,0);
+  reset();state.authError=true;await assert.rejects(owned.loader(args("/app/requests")),(e)=>e.status===401);assert.equal(state.calls.length,0);
+  reset();state.pendingRows=[pendingRow()];const head=await owned.loader({request:request("/app/requests?format=csv",{method:"HEAD"}),params:{}});assert.equal(await head.text(),"");
+  assert.equal(owned.headers({}).get("X-Boundary-Fixture"),"preserved");
+});
+test("bulk cancellation obeys the existing default-off gate before body or transaction",async()=>{
+  reset();const r=await list.action(bulkPost(1,2));assert.equal(r.init.status,403);assert.equal(state.calls.length,0);
+});
+test("bulk cancellation reaches one SERIALIZABLE transaction and reports only confirmed count",async()=>{
+  reset();process.env.PRODUCT_WORKBENCH_QUEUE_ACTIONS_ENABLED="true";state.cancelCount=2;
+  const r=await list.action(bulkPost(1,2));assert.equal(r.data.ok,true);assert.equal(r.data.result.cancelled,2);assert.match(r.data.message,/2 of your waiting/);
+  assert.equal(state.calls.filter((c)=>c.name==="transaction").length,1);assert.equal(state.calls.find((c)=>c.name==="cancel").args.where.OR.length,2);
+  assert.equal(state.calls.find((c)=>c.name==="transaction").options.isolationLevel,"Serializable");
+  assert.equal(state.calls.filter((c)=>c.name==="create").length,0);
+});
+test("partial or stale bulk cancellation returns409 without retry or partial success message",async()=>{
+  reset();process.env.PRODUCT_WORKBENCH_QUEUE_ACTIONS_ENABLED="true";state.cancelCount=1;
+  const r=await list.action(bulkPost(1,2));assert.equal(r.data.ok,false);assert.equal(r.init.status,409);assert.equal(r.data.result,null);assert.match(r.data.message,/Refresh/);
+  assert.equal(state.calls.filter((c)=>c.name==="transaction").length,1);assert.doesNotMatch(JSON.stringify(r),new RegExp(secret));
+});
+test("bulk limit and origin reject before starting a transaction",async()=>{
+  reset();process.env.PRODUCT_WORKBENCH_QUEUE_ACTIONS_ENABLED="true";
+  assert.equal((await list.action(bulkPost(...Array.from({length:21},(_,i)=>i+1)))).init.status,400);
+  const req=bulkPost(1);req.request.headers.set("origin","https://foreign.example");assert.equal((await list.action(req)).init.status,403);
+  assert.equal(state.calls.length,0);
+});
