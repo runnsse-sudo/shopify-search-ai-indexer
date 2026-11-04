@@ -1688,15 +1688,13 @@ export async function runLlmVisibilityAudit(
 
   const llmsTxtPresent =
     Boolean(
-      llmsAnalysis
-        ?.nonEmpty,
+      llmsAnalysis?.nonEmpty && !llmsAnalysis.looksLikeHtml,
     );
 
 
   const llmsFullTxtPresent =
     Boolean(
-      llmsFullAnalysis
-        ?.nonEmpty,
+      llmsFullAnalysis?.nonEmpty && !llmsFullAnalysis.looksLikeHtml,
     );
 
 
@@ -1872,7 +1870,7 @@ export async function runLlmVisibilityAudit(
         "INFO",
 
       message:
-        "No non-empty /llms.txt was detected. This audit treats llms.txt as an optional discovery convention, not a robots control.",
+        "No non-empty /llms.txt was detected. Review the published Shopify discovery endpoint and any existing theme override. A custom llms file is not required by this audit.",
     });
   }
 
@@ -1888,7 +1886,7 @@ export async function runLlmVisibilityAudit(
         "INFO",
 
       message:
-        "No non-empty /llms-full.txt was detected. The generated preview remains read-only and unpublished.",
+        "No non-empty /llms-full.txt was detected. Review Shopify discovery availability and existing overrides; do not replace functioning /agents.md information merely to improve a score.",
     });
   }
 
