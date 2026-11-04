@@ -126,6 +126,7 @@ export type LlmsDocumentAnalysis = {
   markdownLinkCount: number;
   absoluteUrlCount: number;
   structured: boolean;
+  looksLikeHtml: boolean;
 };
 
 export type LlmVisibilityScoreInput = {
@@ -574,7 +575,10 @@ export function analyzeLlmsDocument(
     ).length;
 
 
+  const looksLikeHtml = /<!doctype\s+html\b|<html\b|<head\b|<body\b/i.test(normalized);
+
   return {
+    looksLikeHtml,
     bytes:
       new TextEncoder()
         .encode(
@@ -597,16 +601,8 @@ export function analyzeLlmsDocument(
 
     absoluteUrlCount,
 
-    structured:
-      normalized.length >
-        0 &&
-      h1Count >= 1 &&
-      (
-        markdownLinkCount >=
-          1 ||
-        absoluteUrlCount >=
-          1
-      ),
+    // Only the leading H1 is required by the llms.txt proposal.
+    structured: !looksLikeHtml && /^#\s+\S/.test(lines[0] ?? ""),
   };
 }
 

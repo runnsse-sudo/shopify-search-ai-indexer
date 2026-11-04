@@ -15,6 +15,8 @@ import {
 } from "@shopify/shopify-app-react-router/server";
 
 import prisma from "../db.server";
+import { fetchPrimaryShopDomain } from "../services/shop-info.server";
+import { llmDownload, llmReport, validateLlmAuditRequest } from "../services/llm-visibility/llm-delivery";
 
 import {
   authenticate,
@@ -30,7 +32,7 @@ export const loader =
     request,
   }: LoaderFunctionArgs) => {
     const {
-      session,
+      session, admin,
     } =
       await authenticate.admin(
         request,
@@ -51,17 +53,18 @@ export const loader =
       });
 
 
+    const primaryDomain = shop?.primaryDomain ?? await fetchPrimaryShopDomain(admin).catch((): null => null);
+
     return {
       shopDomain:
         session.shop,
 
       primaryDomain:
-        shop?.primaryDomain ??
-        null,
+        primaryDomain,
 
       ready:
         Boolean(
-          shop?.primaryDomain,
+          primaryDomain,
         ),
     };
   };
@@ -72,40 +75,14 @@ export const action =
     request,
   }: ActionFunctionArgs) => {
     const {
-      session,
+      session, admin,
     } =
       await authenticate.admin(
         request,
       );
 
 
-    const formData =
-      await request.formData();
-
-
-    const intent =
-      String(
-        formData.get(
-          "intent",
-        ) ?? "",
-      );
-
-
-    if (
-      intent !==
-      "run-read-only"
-    ) {
-      return {
-        ok: false,
-
-        error:
-          "Unknown AI visibility audit action.",
-
-        result:
-          null,
-      };
-    }
-
+    await validateLlmAuditRequest(request);
 
     const shop =
       await prisma.shop.findUnique({
@@ -120,8 +97,10 @@ export const action =
       });
 
 
+    const primaryDomain = shop?.primaryDomain ?? await fetchPrimaryShopDomain(admin).catch((): null => null);
+
     if (
-      !shop?.primaryDomain
+      !primaryDomain
     ) {
       return {
         ok: false,
@@ -131,6 +110,7 @@ export const action =
 
         result:
           null,
+        observedAt: null,
       };
     }
 
@@ -139,7 +119,7 @@ export const action =
       const result =
         await runLlmVisibilityAudit({
           primaryDomain:
-            shop.primaryDomain,
+            primaryDomain,
         });
 
 
@@ -150,30 +130,12 @@ export const action =
           null,
 
         result,
+        observedAt: new Date().toISOString(),
       };
     } catch (error) {
-      console.error(
-        "AI visibility audit failed",
-        {
-          shop:
-            session.shop,
+      console.error("AI visibility audit failed", { category: error instanceof Error ? "AUDIT_FAILED" : "UNKNOWN_FAILURE" });
+      return { ok: false, error: "The audit could not be completed. Try again later. No files were published.", result: null, observedAt: null };
 
-          error,
-        },
-      );
-
-
-      return {
-        ok: false,
-
-        error:
-          error instanceof Error
-            ? error.message
-            : "AI visibility audit failed.",
-
-        result:
-          null,
-      };
     }
   };
 
@@ -290,18 +252,10 @@ export default function LlmVisibility() {
       heading="AI / LLM Visibility"
     >
       <s-section
-        heading="Read-only Phase C audit"
+        heading="AI discovery check"
       >
         <s-paragraph>
-          This audit evaluates AI
-          crawler and user-triggered
-          fetcher policy, checks
-          optional llms.txt files,
-          reuses the bounded sitemap
-          inventory for canonical/noindex
-          visibility, and generates
-          deterministic unpublished
-          llms.txt previews.
+          Shopify supplies the default agent-discovery information. This app checks published discovery files, crawler access and a bounded sitemap sample, then suggests improvements. You do not need to write llms files yourself. Custom theme templates can override Shopify’s defaults; this audit does not determine template ownership.
         </s-paragraph>
 
         <s-unordered-list>
@@ -735,46 +689,14 @@ export default function LlmVisibility() {
       </s-section>
 
 
-      <s-section
-        heading="Unpublished llms.txt candidate"
-      >
-        {!result ? (
-          <s-paragraph>
-            The deterministic
-            preview is generated
-            only after an audit.
-          </s-paragraph>
-        ) : (
-          <pre>
-            {result
-              .previews
-              .llmsTxt}
-          </pre>
-        )}
-      </s-section>
-
+      {result && fetcher.data?.observedAt ? <s-section heading="Your audit report">
+        <s-paragraph>Observed: {fetcher.data.observedAt}. Technical readiness is based on a bounded sample, not AI mentions or rankings. A high score does not guarantee inclusion.</s-paragraph>
+        <p><a download="ai-visibility-report.json" href={llmDownload(llmReport(result, fetcher.data.observedAt), "json")}>Download audit report</a></p>
+        <s-paragraph>Next: review high-priority crawler, canonical and noindex findings. Improve product descriptions, titles and verified company information in Shopify, then run a new audit. Keep functioning Shopify discovery information in place.</s-paragraph>
+      </s-section> : null}
 
       <s-section
-        heading="Unpublished llms-full.txt candidate"
-      >
-        {!result ? (
-          <s-paragraph>
-            The bounded extended
-            preview is not published
-            to the storefront.
-          </s-paragraph>
-        ) : (
-          <pre>
-            {result
-              .previews
-              .llmsFullTxt}
-          </pre>
-        )}
-      </s-section>
-
-
-      <s-section
-        heading="Phase boundaries"
+        heading="Read-only checks"
       >
         <s-unordered-list>
           <s-list-item>
@@ -826,7 +748,7 @@ export const headers:
   HeadersFunction = (
     headersArgs,
   ) => {
-    return boundary.headers(
-      headersArgs,
-    );
+    const headers = new Headers(boundary.headers(headersArgs));
+    headers.set("Cache-Control", "private, no-store");
+    return headers;
   };
