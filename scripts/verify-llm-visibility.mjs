@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { transform } from "esbuild";
 
 import {
   AI_CRAWLERS,
@@ -14,6 +16,30 @@ import {
   runLlmVisibilityAudit,
 } from "../build-tests/llm-visibility-server.mjs";
 
+const deliverySource = await readFile(
+  new URL("../app/services/llm-visibility/llm-delivery.ts", import.meta.url),
+  "utf8",
+);
+const { code: deliveryCode } = await transform(deliverySource, { loader: "ts", format: "esm" });
+const { validateLlmAuditRequest } = await import(
+  `data:text/javascript,${encodeURIComponent(deliveryCode)}`
+);
+const publicAppUrl = "https://app.example.test";
+const auditRequest = (origin) => new Request("http://app.example.test/app/llm-visibility.data", {
+  method: "POST",
+  headers: {
+    "content-type": "application/x-www-form-urlencoded",
+    ...(origin === undefined ? {} : { origin }),
+  },
+  body: "intent=run-read-only",
+});
+await validateLlmAuditRequest(auditRequest(publicAppUrl), publicAppUrl);
+for (const origin of ["https://other.example.test", "http://app.example.test", "null", undefined]) {
+  await assert.rejects(validateLlmAuditRequest(auditRequest(origin), publicAppUrl), { status: 403 });
+}
+for (const appUrl of [undefined, "not a URL", "file:///app"]) {
+  await assert.rejects(validateLlmAuditRequest(auditRequest(publicAppUrl), appUrl), { status: 403 });
+}
 
 const crawlerTokens =
   AI_CRAWLERS.map(

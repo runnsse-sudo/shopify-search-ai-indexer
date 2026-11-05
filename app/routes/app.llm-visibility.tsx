@@ -82,7 +82,7 @@ export const action =
       );
 
 
-    await validateLlmAuditRequest(request);
+    await validateLlmAuditRequest(request, process.env.SHOPIFY_APP_URL);
 
     const shop =
       await prisma.shop.findUnique({
