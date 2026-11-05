@@ -1,7 +1,16 @@
 import type { LlmVisibilityAuditResult } from "./llm-visibility.server";
 
-export async function validateLlmAuditRequest(request: Request) {
-  if (request.method !== "POST" || request.headers.get("origin") !== new URL(request.url).origin) throw new Response("Request not permitted", {status:403});
+export async function validateLlmAuditRequest(request: Request, appUrl: string | undefined) {
+  // The server-side request URL may use HTTP after TLS termination.
+  const publicUrl = appUrl ? URL.parse(appUrl) : null;
+  if (
+    request.method !== "POST" ||
+    !publicUrl ||
+    !["http:", "https:"].includes(publicUrl.protocol) ||
+    request.headers.get("origin") !== publicUrl.origin
+  ) {
+    throw new Response("Request not permitted", { status: 403 });
+  }
   if ((request.headers.get("content-type") ?? "").split(";",1)[0].trim().toLowerCase() !== "application/x-www-form-urlencoded") throw new Response("Unsupported form", {status:415});
   const reader=request.body?.getReader();let raw="",size=0;const decoder=new TextDecoder();
   if(reader)try {for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>1024){await reader.cancel();throw new Response("Form too large",{status:413});}raw+=decoder.decode(value,{stream:true});}raw+=decoder.decode();}finally{reader.releaseLock();}

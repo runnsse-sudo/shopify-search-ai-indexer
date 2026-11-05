@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {llmDownload,llmReport,validateLlmAuditRequest} from '../app/services/llm-visibility/llm-delivery.ts';
+import {llmDownload,llmReport,validateLlmAuditRequest as validateAuditRequest} from '../app/services/llm-visibility/llm-delivery.ts';
+const validateLlmAuditRequest = (request) => validateAuditRequest(request, 'https://app.example');
 const at='2026-11-04T10:00:00.000Z';
 const result={primaryHost:'store.example',score:70,scoreLabel:'Review needed',scoreNote:'Sample only',robots:{statusCode:200},llmsTxt:{statusCode:404},llmsFullTxt:{statusCode:200},previews:{llmsTxt:'# Store\n[Product](https://store.example/products/a)',llmsFullTxt:'# Store full\n'},recommendations:[{code:'MISSING_LLMS',severity:'INFO',message:'Review candidate'}],privateCredential:'MUST_NOT_EXPORT'};
 test('downloads preserve Unicode, newlines and literal markup without executable URL schemes',()=>{
