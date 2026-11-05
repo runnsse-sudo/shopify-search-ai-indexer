@@ -3,7 +3,7 @@
 ## Delivered behavior
 
 Shopify supplies the default agent-discovery information. AI Indexer audits the
-published storefront: AI crawler policy, optional llms files, sitemap visibility,
+published storefront: AI crawler policy, /agents.md and its optional llms compatibility files, sitemap visibility,
 canonical mismatches and noindex findings. It recommends improvements rather than
 replacing Shopify's files. Custom theme overrides may exist; the audit does not
 claim to know which component generated a public response.
