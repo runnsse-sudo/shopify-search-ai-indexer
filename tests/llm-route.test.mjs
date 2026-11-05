@@ -5,6 +5,13 @@ import {mkdirSync} from 'node:fs';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {createStaticHandler,createStaticRouter,StaticRouterProvider} from 'react-router';
+import process from 'node:process';
+const previousAppUrl = process.env.SHOPIFY_APP_URL;
+process.env.SHOPIFY_APP_URL = 'https://app.example';
+test.after(() => {
+  if (previousAppUrl === undefined) delete process.env.SHOPIFY_APP_URL;
+  else process.env.SHOPIFY_APP_URL = previousAppUrl;
+});
 let state;
 const reset=()=>{state={auth:0,reads:0,audits:0,domainReads:0,discoveredDomain:null,shop:'owner.myshopify.com',domain:'store.example'};globalThis.llmRouteFixture={authenticate:{admin:async()=>{state.auth++;if(state.authError)throw new Response(null,{status:401});return{session:{shop:state.shop},admin:{graphql:async()=>{state.domainReads++;if(state.domainError)throw Error("PRIVATE_DOMAIN_ERROR");return Response.json({data:{shop:{primaryDomain:state.discoveredDomain?{host:state.discoveredDomain,url:"https://"+state.discoveredDomain}:null}}});}}};}},db:{shop:{findUnique:async(args)=>{state.reads++;assert.equal(args.where.domain,state.shop);return {domain:state.shop,primaryDomain:state.domain};}}},audit:async(args)=>{state.audits++;assert.equal(args.primaryDomain,state.domain ?? state.discoveredDomain);if(state.error)throw Error('SYNTHETIC_PRIVATE_PROVIDER_BODY');return{primaryHost:state.domain ?? state.discoveredDomain,previews:{llmsTxt:'# Store',llmsFullTxt:'# Full'}};}};};
 mkdirSync('build-tests',{recursive:true});
