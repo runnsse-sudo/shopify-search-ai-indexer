@@ -582,7 +582,7 @@ export default function LlmVisibility() {
       >
         {!result ? (
           <s-paragraph>
-            No llms.txt resources
+            No discovery files
             have been checked yet.
           </s-paragraph>
         ) : (
@@ -591,6 +591,17 @@ export default function LlmVisibility() {
             gap="base"
           >
             <s-unordered-list>
+              <s-list-item>
+                /agents.md (primary):{" "}
+                {statusText(result.agentsMd.statusCode, result.agentsMd.error)}
+                {result.agentsMd.analysis
+                  ? result.agentsMd.analysis.looksLikeHtml
+                    ? " — HTML response"
+                    : result.agentsMd.analysis.nonEmpty
+                      ? " — Discovery content found"
+                      : " — Empty response"
+                  : ""}
+              </s-list-item>
               <s-list-item>
                 /llms.txt:{" "}
                 {statusText(

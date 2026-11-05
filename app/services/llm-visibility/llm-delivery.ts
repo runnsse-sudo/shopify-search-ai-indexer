@@ -19,7 +19,7 @@ export function llmReport(result: LlmVisibilityAuditResult, observedAt: string) 
     version: 1, observedAt, primaryHost: result.primaryHost,
     scope: "Technical readiness from a bounded sample; not AI mentions, ranking or guaranteed inclusion.",
     score: result.score, scoreLabel: result.scoreLabel, scoreNote: result.scoreNote,
-    robots: result.robots, llmsTxt: result.llmsTxt, llmsFullTxt: result.llmsFullTxt,
+    robots: result.robots, agentsMd: result.agentsMd, llmsTxt: result.llmsTxt, llmsFullTxt: result.llmsFullTxt,
     crawlers: result.crawlers, aiAccessSummary: result.aiAccessSummary,
     sitemap: result.sitemap, recommendations: result.recommendations,
     mode: "AUDIT_ONLY", contentStrategy: "SHOPIFY_MANAGED_BASE",

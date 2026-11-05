@@ -128,6 +128,8 @@ export type LlmVisibilityAuditResult = {
       null;
   };
 
+  agentsMd: LlmVisibilityAuditResult["llmsTxt"];
+
   llmsFullTxt: {
     url: string;
 
@@ -1403,6 +1405,8 @@ export async function runLlmVisibilityAudit(
     ).toString();
 
 
+  const agentsMdUrl = new URL("/agents.md", base).toString();
+
   const llmsTxtUrl =
     new URL(
       "/llms.txt",
@@ -1436,6 +1440,10 @@ export async function runLlmVisibilityAudit(
 
         const resources =
           await Promise.all([
+            fetchOptionalResource(
+              { url: agentsMdUrl, allowedHost, maxBodyBytes: LLMS_BODY_LIMIT },
+              fetchText,
+            ),
             fetchOptionalResource(
               {
                 url:
@@ -1543,6 +1551,7 @@ export async function runLlmVisibilityAudit(
 
 
   const [
+    agentsResource,
     robotsResource,
     llmsResource,
     llmsFullResource,
@@ -1685,6 +1694,11 @@ export async function runLlmVisibilityAudit(
         )
       : null;
 
+
+  const agentsAnalysis = agentsResource.statusCode === 200
+    ? analyzeLlmsDocument(agentsResource.body)
+    : null;
+  const agentsAvailable = Boolean(agentsAnalysis?.nonEmpty && !agentsAnalysis.looksLikeHtml);
 
   const llmsTxtPresent =
     Boolean(
@@ -1859,6 +1873,14 @@ export async function runLlmVisibilityAudit(
   }
 
 
+  if (!agentsAvailable) {
+    recommendations.push({
+      code: "AGENTS_MD_UNVERIFIED",
+      severity: "INFO",
+      message: "Could not confirm usable content at /agents.md. Review the primary storefront domain and any discovery template overrides.",
+    });
+  }
+
   if (
     !llmsTxtPresent
   ) {
@@ -2013,6 +2035,8 @@ export async function runLlmVisibilityAudit(
           ?.sitemaps ??
         [],
     },
+
+    agentsMd: { ...resourceSummary(agentsResource), analysis: agentsAnalysis },
 
     llmsTxt: {
       ...resourceSummary(

@@ -407,6 +407,10 @@ const resourceByUrl =
       },
     ],
     [
+      "https://example.com/agents.md",
+      { statusCode: 200, body: "# Store", contentType: "text/plain" },
+    ],
+    [
       "https://example.com/llms.txt",
       {
         statusCode:
@@ -971,6 +975,23 @@ console.log(
 console.log(
   "LLM_VISIBILITY_SCORE_PASS",
 );
+
+assert.equal(result.agentsMd.statusCode, 200);
+assert.equal(result.agentsMd.analysis.nonEmpty, true);
+assert.ok(!result.recommendations.some(({ code }) => code === "AGENTS_MD_UNVERIFIED"));
+
+const htmlDiscovery = await runLlmVisibilityAudit({
+  primaryDomain: "example.com",
+  fetchText: async (input) => {
+    const response = await fetchText(input);
+    return input.url.endsWith("/agents.md")
+      ? { ...response, body: "<!doctype html><html><body>Fallback</body></html>", contentType: "text/html" }
+      : response;
+  },
+  sitemapRunner,
+});
+assert.equal(htmlDiscovery.agentsMd.analysis.looksLikeHtml, true);
+assert.ok(htmlDiscovery.recommendations.some(({ code }) => code === "AGENTS_MD_UNVERIFIED"));
 
 console.log(
   "LLM_VISIBILITY_SERVER_INTEGRATION_PASS",
