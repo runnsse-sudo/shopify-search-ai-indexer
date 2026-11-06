@@ -3,6 +3,7 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
+import type { action as catalogAction } from "./app.llm-visibility_.catalog";
 
 import {
   useFetcher,
@@ -240,6 +241,8 @@ export default function LlmVisibility() {
     fetcher.state !==
     "idle";
 
+  const catalog = useFetcher<typeof catalogAction>();
+  const catalogBusy = catalog.state !== "idle";
 
   const result =
     fetcher.data
@@ -251,6 +254,32 @@ export default function LlmVisibility() {
     <s-page
       heading="AI / LLM Visibility"
     >
+      <s-section heading="Public product catalog export">
+        <s-paragraph>
+          Generate a local llms-full.txt download from the products Shopify lists as public in this Online Store.
+        </s-paragraph>
+        <catalog.Form method="post" action="/app/llm-visibility/catalog">
+          <input type="hidden" name="intent" value="export-public-catalog" />
+          <button type="submit" disabled={catalogBusy}>
+            {catalogBusy ? "Generating catalog…" : "Generate llms-full.txt"}
+          </button>
+        </catalog.Form>
+        {!catalogBusy && catalog.data?.error && <s-paragraph>{catalog.data.error}</s-paragraph>}
+        {!catalogBusy && catalog.data?.catalog && (
+          <button type="button" onClick={() => {
+            const file = catalog.data?.catalog;
+            if (!file) return;
+            const url = URL.createObjectURL(new Blob([file.text], { type: "text/plain;charset=utf-8" }));
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "llms-full.txt";
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          }}>
+            Download llms-full.txt ({catalog.data.catalog.count} products)
+          </button>
+        )}
+      </s-section>
       <s-section
         heading="AI discovery check"
       >
