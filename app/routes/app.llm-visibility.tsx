@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { useAppBridge } from "@shopify/app-bridge-react";
+import { requestRobottoFilesAccess, ROBOTTO_SHOP } from "../services/llm-visibility/llm-delivery";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
@@ -219,6 +222,34 @@ function robotsGroupText(
 }
 
 
+function RobottoFilesAccess() {
+  const shopify = useAppBridge();
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+
+  async function requestAccess() {
+    setBusy(true);
+    setStatus("");
+    try {
+      const granted = await requestRobottoFilesAccess(shopify.scopes);
+      setStatus(granted ? "Shopify har beviljat filåtkomst." : "Shopify har inte beviljat filåtkomst.");
+    } catch {
+      setStatus("Filåtkomsten kunde inte verifieras. Försök igen.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <button type="button" onClick={requestAccess} disabled={busy}>
+        {busy ? "Kontrollerar filåtkomst…" : "Ge filåtkomst"}
+      </button>
+      <p role="status">{status}</p>
+    </div>
+  );
+}
+
 export default function LlmVisibility() {
   const {
     shopDomain,
@@ -251,6 +282,7 @@ export default function LlmVisibility() {
     <s-page
       heading="AI / LLM Visibility"
     >
+      {shopDomain === ROBOTTO_SHOP && <s-section heading="Shopify Files"><RobottoFilesAccess /></s-section>}
       <s-section
         heading="AI discovery check"
       >

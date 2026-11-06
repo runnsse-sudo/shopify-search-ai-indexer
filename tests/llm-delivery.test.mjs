@@ -38,3 +38,36 @@ test('report separates discovery from unverified Catalog eligibility',()=>{
  assert.equal(guide.catalogEligibility,'NOT_VERIFIED');assert.equal(guide.identicalContentIsExpected,true);
  assert.equal(guide.canonicalShopifyPath,'/agents.md');assert.match(guide.searchNote,/do not guarantee/);
 });
+
+test('Robotto file access requests only write_files and verifies the resulting grant', async () => {
+  const { requestRobottoFilesAccess } = await import('../app/services/llm-visibility/llm-delivery.ts');
+  for (const grantedAfterRequest of [true, false]) {
+    let requested = false;
+    const calls = [];
+    const result = await requestRobottoFilesAccess({
+      async query() {
+        calls.push('query');
+        return { granted: requested && grantedAfterRequest ? ['write_files'] : [] };
+      },
+      async request(handles) {
+        calls.push(handles);
+        requested = true;
+        return { result: 'granted-all' };
+      },
+    });
+    assert.equal(result, grantedAfterRequest);
+    assert.deepEqual(calls, ['query', ['write_files'], 'query']);
+  }
+});
+
+test('Robotto file access skips the dialog when access already exists and propagates verification failures', async () => {
+  const { requestRobottoFilesAccess } = await import('../app/services/llm-visibility/llm-delivery.ts');
+  assert.equal(await requestRobottoFilesAccess({
+    async query() { return { granted: ['write_files'] }; },
+    async request() { assert.fail('unexpected permission request'); },
+  }), true);
+  await assert.rejects(requestRobottoFilesAccess({
+    async query() { throw new Error('unavailable'); },
+    async request() { assert.fail('unexpected permission request'); },
+  }), /unavailable/);
+});
