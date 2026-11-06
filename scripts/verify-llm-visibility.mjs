@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { transform } from "esbuild";
+import { build, transform } from "esbuild";
 
 import {
   AI_CRAWLERS,
@@ -21,7 +21,7 @@ const deliverySource = await readFile(
   "utf8",
 );
 const { code: deliveryCode } = await transform(deliverySource, { loader: "ts", format: "esm" });
-const { validateLlmAuditRequest } = await import(
+const { llmReport, validateLlmAuditRequest } = await import(
   `data:text/javascript,${encodeURIComponent(deliveryCode)}`
 );
 const publicAppUrl = "https://app.example.test";
@@ -671,6 +671,55 @@ const result =
     sitemapRunner,
   });
 
+await build({
+  entryPoints: ["app/services/sitemap/sitemap-audit.server.ts"],
+  outfile: "build-tests/llm-sitemap-regression.mjs",
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  packages: "external",
+});
+const { runSitemapAudit } = await import("../build-tests/llm-sitemap-regression.mjs");
+let sitemapReads = 0;
+const partial = await runLlmVisibilityAudit({
+  primaryDomain: "example.com",
+  fetchText,
+  sitemapRunner: (input) => runSitemapAudit({
+    ...input,
+    fetchXml: async ({ url }) => {
+      sitemapReads++;
+      const entries = Array.from({ length: 51 }, (_, i) =>
+        `<sitemap><loc>https://example.com/sitemap-${i}.xml</loc></sitemap>`
+      ).join("");
+      return {
+        requestedUrl: url,
+        finalUrl: url,
+        statusCode: 200,
+        body: new URL(url).pathname === "/sitemap.xml"
+          ? `<sitemapindex>${entries}</sitemapindex>`
+          : "<urlset><url><loc>https://example.com/</loc></url></urlset>",
+        redirectChain: [],
+        contentType: "application/xml",
+      };
+    },
+    fetchPage: async () => assert.fail("Page sampling must stop when the sitemap limit is exceeded"),
+  }),
+});
+assert.equal(sitemapReads, 50);
+assert.equal(partial.sitemap, null);
+assert.equal(partial.score, null);
+assert.match(partial.scoreNote, /sitemap document limit/);
+const partialReport = JSON.parse(llmReport(partial, "2026-11-06T14:24:00Z"));
+assert.equal(partialReport.score, null);
+assert.equal(partialReport.sitemap, null);
+for (const key of ["robots", "agentsMd", "llmsTxt", "llmsFullTxt"]) {
+  assert.deepEqual(partialReport[key], result[key]);
+}
+await assert.rejects(runLlmVisibilityAudit({
+  primaryDomain: "example.com",
+  fetchText,
+  sitemapRunner: async () => { throw new Error("UNEXPECTED_SITEMAP_FAILURE"); },
+}), /UNEXPECTED_SITEMAP_FAILURE/);
 
 assert.equal(
   sitemapRunnerCalls,
