@@ -1,6 +1,10 @@
 import type { LlmVisibilityAuditResult } from "./llm-visibility.server";
 
-export async function validateLlmAuditRequest(request: Request, appUrl: string | undefined) {
+export async function validateLlmAuditRequest(
+  request: Request,
+  appUrl: string | undefined,
+  intent: "run-read-only" | "export-public-catalog" = "run-read-only",
+) {
   // The server-side request URL may use HTTP after TLS termination.
   const publicUrl = appUrl ? URL.parse(appUrl) : null;
   if (
@@ -15,7 +19,7 @@ export async function validateLlmAuditRequest(request: Request, appUrl: string |
   const reader=request.body?.getReader();let raw="",size=0;const decoder=new TextDecoder();
   if(reader)try {for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>1024){await reader.cancel();throw new Response("Form too large",{status:413});}raw+=decoder.decode(value,{stream:true});}raw+=decoder.decode();}finally{reader.releaseLock();}
   const params=new URLSearchParams(raw);
-  if(params.getAll("intent").length!==1 || params.get("intent")!=="run-read-only" || [...params.keys()].some(key=>key!=="intent")) throw new Response("Invalid audit request",{status:400});
+  if(params.getAll("intent").length!==1 || params.get("intent")!==intent || [...params.keys()].some(key=>key!=="intent")) throw new Response("Invalid audit request",{status:400});
 }
 
 export function llmDownload(content: string, kind: "text" | "json" = "text") {
