@@ -44,3 +44,15 @@ export function llmReport(result: LlmVisibilityAuditResult, observedAt: string) 
     customTemplateOwnership: "NOT_VERIFIED", writesPerformed: 0, timings: result.timings,
   }, null, 2) + "\n";
 }
+
+export const ROBOTTO_SHOP = "robotto-7143.myshopify.com";
+
+export async function requestRobottoFilesAccess(scopes: {
+  query(): Promise<{ granted: readonly string[] }>;
+  request(handles: ["write_files"]): Promise<unknown>;
+}): Promise<boolean> {
+  const handle = "write_files";
+  if ((await scopes.query()).granted.includes(handle)) return true;
+  await scopes.request([handle]);
+  return (await scopes.query()).granted.includes(handle);
+}
