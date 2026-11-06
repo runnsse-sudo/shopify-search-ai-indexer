@@ -68,7 +68,7 @@ export type LlmVisibilityRecommendation = {
 export type LlmVisibilityAuditResult = {
   primaryHost: string;
 
-  score: number;
+  score: number | null;
 
   scoreLabel: string;
 
@@ -240,7 +240,7 @@ export type LlmVisibilityAuditResult = {
 
     sampledFetchFailures:
       number;
-  };
+  } | null;
 
   previews: {
     llmsTxt: string;
@@ -1503,14 +1503,15 @@ export async function runLlmVisibilityAudit(
           Date.now();
 
 
-        const audit =
-          await sitemapRunner({
-            primaryDomain:
-              input.primaryDomain,
-
-            maxPageChecks:
-              8,
-          });
+        const audit = await sitemapRunner({
+          primaryDomain: input.primaryDomain,
+          maxPageChecks: 8,
+        }).catch((error: unknown) => {
+          if (error instanceof Error && error.message === "SITEMAP_DOCUMENT_LIMIT_EXCEEDED") {
+            return null;
+          }
+          throw error;
+        });
 
 
         return {
@@ -1740,7 +1741,7 @@ export async function runLlmVisibilityAudit(
 
 
   const score =
-    calculateLlmVisibilityScore({
+    sitemapAudit ? calculateLlmVisibilityScore({
       robotsStatusCode:
         robotsResource
           .statusCode,
@@ -1765,7 +1766,7 @@ export async function runLlmVisibilityAudit(
         sitemapAudit
           .pageChecks
           .canonicalMismatch,
-    });
+    }) : null;
 
 
   const recommendations:
@@ -1934,8 +1935,8 @@ export async function runLlmVisibilityAudit(
 
 
   if (
-    sitemapAudit
-      .pageChecks
+    sitemapAudit &&
+    sitemapAudit.pageChecks
       .noindex >
     0
   ) {
@@ -1953,8 +1954,8 @@ export async function runLlmVisibilityAudit(
 
 
   if (
-    sitemapAudit
-      .pageChecks
+    sitemapAudit &&
+    sitemapAudit.pageChecks
       .canonicalMismatch >
     0
   ) {
@@ -1976,12 +1977,10 @@ export async function runLlmVisibilityAudit(
       allowedHost,
 
     sitemapUrl:
-      sitemapAudit
-        .rootSitemapUrl,
+      sitemapAudit?.rootSitemapUrl ?? new URL("/sitemap.xml", base).toString(),
 
     sampleUrls:
-      sitemapAudit
-        .sampleUrls
+      (sitemapAudit?.sampleUrls ?? [])
         .map(
           (
             entry,
@@ -2003,12 +2002,14 @@ export async function runLlmVisibilityAudit(
     score,
 
     scoreLabel:
-      scoreLabel(
+      score === null ? "Unavailable" : scoreLabel(
         score,
       ),
 
     scoreNote:
-      "Heuristic technical readiness score only. Training, generative-control, and user-triggered fetcher policy choices do not reduce this score.",
+      score === null
+        ? "Partial audit: the sitemap document limit was reached. Sitemap metrics and the overall score are unavailable."
+        : "Heuristic technical readiness score only. Training, generative-control, and user-triggered fetcher policy choices do not reduce this score.",
 
     representativePaths:
       [
@@ -2124,7 +2125,7 @@ export async function runLlmVisibilityAudit(
         ).length,
     },
 
-    sitemap: {
+    sitemap: sitemapAudit ? {
       rootSitemapUrl:
         sitemapAudit
           .rootSitemapUrl,
@@ -2156,7 +2157,7 @@ export async function runLlmVisibilityAudit(
         sitemapAudit
           .pageChecks
           .failed,
-    },
+    } : null,
 
     previews: {
       llmsTxt:

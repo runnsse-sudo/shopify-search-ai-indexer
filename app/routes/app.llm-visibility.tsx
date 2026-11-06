@@ -346,7 +346,7 @@ export default function LlmVisibility() {
               <Metric
                 label="Readiness score"
                 value={
-                  `${result.score}/100`
+                  result.score === null ? "Unavailable" : `${result.score}/100`
                 }
               />
 
@@ -363,7 +363,7 @@ export default function LlmVisibility() {
                 value={
                   result
                     .sitemap
-                    .totalUrls
+                    ?.totalUrls ?? "Unavailable"
                 }
               />
 
@@ -372,7 +372,7 @@ export default function LlmVisibility() {
                 value={
                   result
                     .sitemap
-                    .sampledPages
+                    ?.sampledPages ?? "Unavailable"
                 }
               />
 
@@ -441,8 +441,8 @@ export default function LlmVisibility() {
                 Sampled noindex:{" "}
                 {result
                   .sitemap
-                  .sampledNoindex
-                  .toLocaleString()}
+                  ?.sampledNoindex
+                  .toLocaleString() ?? "Unavailable"}
               </s-list-item>
 
               <s-list-item>
@@ -450,8 +450,8 @@ export default function LlmVisibility() {
                 mismatch:{" "}
                 {result
                   .sitemap
-                  .sampledCanonicalMismatch
-                  .toLocaleString()}
+                  ?.sampledCanonicalMismatch
+                  .toLocaleString() ?? "Unavailable"}
               </s-list-item>
 
               <s-list-item>
@@ -459,8 +459,8 @@ export default function LlmVisibility() {
                 failures:{" "}
                 {result
                   .sitemap
-                  .sampledFetchFailures
-                  .toLocaleString()}
+                  ?.sampledFetchFailures
+                  .toLocaleString() ?? "Unavailable"}
               </s-list-item>
             </s-unordered-list>
           </s-stack>
