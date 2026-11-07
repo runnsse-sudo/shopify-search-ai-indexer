@@ -52,3 +52,15 @@ Sources:
 - https://shopify.dev/docs/storefronts/themes/architecture/templates/llms-txt-liquid
 - https://llmstxt.org/
 - https://developers.google.com/search/docs/appearance/ai-features
+
+## Robotto catalog refresh worker
+
+The worker reads Robotto's active Online Store products through the existing offline Shopify session. It requires an exact product count and complete pagination. It compares the set of product links with the existing Shopify Files catalog and skips publication when those links are unchanged, even if titles or introductory text differ.
+
+Build with npm run build:robotto-catalog-worker. A future authorized invocation uses node build-workers/robotto-catalog-worker.mjs --run-robotto-catalog-once and ROBOTTO_CATALOG_BUCKET. This code creates no scheduler.
+
+The Cloud Storage adapter uses the fixed robotto/llms-full/ prefix. The shared lock uses create-if-absent and generation-conditional deletion. Backups use immutable SHA256-based names and generation-specific binary readback. Runtime callers must use the same approved bucket and lock path. An interrupted or uncertain run retains its lock for reconciliation. Successful rollback is reported as ROLLED_BACK and makes the worker exit unsuccessfully.
+
+The publication adapter targets only Robotto GenericFile gid://shopify/GenericFile/62861370655066. It verifies the shop and write_files scope, saves the verified backup before replacement, and verifies public bytes after replacement. It restores the backup on an error only when the candidate is confirmed at the public URL. Unrecognized content requires review.
+
+Local tests use synthetic providers. Activation, a job or scheduler, runtime configuration and Shopify publication require separate authorization.
