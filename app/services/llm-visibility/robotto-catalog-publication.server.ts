@@ -56,8 +56,8 @@ function productLinks(bytes: Uint8Array) {
   return links;
 }
 
-async function readPublicCatalog(transport: typeof fetch) {
-  const response = await transport(publicUrl, {
+async function readPublicCatalog(transport: typeof fetch, url: string) {
+  const response = await transport(url, {
     cache: "no-store", redirect: "error",
     headers: { "Cache-Control": "no-cache" }, signal: AbortSignal.timeout(15_000),
   });
@@ -79,6 +79,39 @@ async function readPublicCatalog(transport: typeof fetch) {
   } finally {
     reader.releaseLock();
   }
+}
+
+async function inspectCatalog(admin: AdminGraphqlClient) {
+  const response = await admin.graphql(readCatalogFile, { variables: { id: fileId } });
+  if (!response.ok) throw new Error("SHOPIFY_HTTP_FAILED");
+  const body = await response.json();
+  if (!body.data || body.errors?.length) throw new Error("SHOPIFY_GRAPHQL_FAILED");
+  const data = body.data;
+  const file = data.node;
+  if (data.shop?.myshopifyDomain !== shop || !file || file.id !== fileId) throw new Error("SHOP_OR_FILE_MISMATCH");
+  if (!data.currentAppInstallation?.accessScopes.some((scope: { handle: string }) => scope.handle === "write_files")) {
+    throw new Error("WRITE_FILES_NOT_GRANTED");
+  }
+  if (file.fileStatus !== "READY") return null;
+  const url = typeof file.url === "string" ? URL.parse(file.url) : null;
+  if (!url || url.protocol !== "https:" || url.host !== "cdn.shopify.com" ||
+      url.pathname !== "/s/files/1/0766/2777/1738/files/llms-full.txt" ||
+      !/^\?v=[0-9]+$/.test(url.search) || url.username || url.password || url.hash) {
+    throw new Error("SHOPIFY_FILE_URL_MISMATCH");
+  }
+  return { canonical: url.href, download: publicUrl + url.search };
+}
+
+async function readVerifiedCatalog(admin: AdminGraphqlClient, transport: typeof fetch) {
+  const file = await inspectCatalog(admin);
+  if (!file) throw new Error("FILE_NOT_READY");
+  const canonical = await readPublicCatalog(transport, file.canonical);
+  const published = await readPublicCatalog(transport, file.download);
+  const current = await inspectCatalog(admin);
+  if (sha(canonical) !== sha(published) || current?.canonical !== file.canonical) {
+    throw new Error("PUBLIC_HASH_NOT_VERIFIED");
+  }
+  return published;
 }
 
 export async function refreshRobottoOnlineStoreCatalog(
@@ -106,7 +139,7 @@ async function refreshLockedCatalog(
   const catalog = await generatePublicLlmCatalog(admin, "www.robotto.se", true);
   const candidate = Buffer.from(catalog.text);
   if (catalog.count !== total.count || candidate.length > limit) throw new Error("ROBOTTO_CATALOG_INCOMPLETE");
-  const backup = await readPublicCatalog(transport);
+  const backup = await readVerifiedCatalog(admin, transport);
   const previous = productLinks(backup);
   const next = productLinks(candidate);
   if (previous.size === next.size && [...next].every(link => previous.has(link))) {
@@ -210,29 +243,11 @@ export async function publishRobottoCatalog(input: PublicationInput) {
   }
 
   async function inspect() {
-    const data = await query<{
-      shop: { myshopifyDomain: string };
-      currentAppInstallation: { accessScopes: { handle: string }[] } | null;
-      node?: { id: string; fileStatus: string; url: string };
-    }>(readCatalogFile, { id: fileId });
-    const file = data.node;
-    if (data.shop.myshopifyDomain !== shop || !file || file.id !== fileId) {
-      throw new Error("SHOP_OR_FILE_MISMATCH");
-    }
-    if (!data.currentAppInstallation?.accessScopes.some(scope => scope.handle === "write_files")) {
-      throw new Error("WRITE_FILES_NOT_GRANTED");
-    }
-    if (file.fileStatus !== "READY") return null;
-    const url = URL.parse(file.url);
-    if (!url || url.protocol !== "https:" || url.host !== "cdn.shopify.com" ||
-        !url.pathname.endsWith("/files/llms-full.txt") || url.username || url.password || url.hash) {
-      throw new Error("SHOPIFY_FILE_URL_MISMATCH");
-    }
-    return file;
+    return inspectCatalog(admin);
   }
 
   async function readPublic() {
-    return sha(await readPublicCatalog(transport));
+    return sha(await readVerifiedCatalog(admin, transport));
   }
 
   async function stage(bytes: Uint8Array) {

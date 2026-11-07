@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -34,8 +35,10 @@ test("prepared pilot is shop- and hash-bound and cannot be replayed", async t =>
   assert.equal(calls, 1);
 });
 
-function fixture({ failAfterWrite = false, ambiguous = false, drift = false, foreign = false, missingScope = false, initial = backup } = {}) {
+function fixture({ failAfterWrite = false, ambiguous = false, drift = false, foreign = false, missingScope = false, initial = backup, fileUrl, mismatch = false, versionDrift = false } = {}) {
   let current = drift ? bytes("External change") : initial;
+  let version = 1;
+  const downloads = [];
   const writes = [];
   const payloads = new Map();
   let stages = 0;
@@ -45,7 +48,7 @@ function fixture({ failAfterWrite = false, ambiguous = false, drift = false, for
       return Response.json({ data: {
         shop: { myshopifyDomain: foreign ? "other.myshopify.com" : "robotto-7143.myshopify.com" },
         currentAppInstallation: { accessScopes: [{ handle: missingScope ? "read_products" : "write_files" }] },
-        node: { id, fileStatus: "READY", url: "https://cdn.shopify.com/s/files/1/files/llms-full.txt?v=1" },
+        node: { id, fileStatus: "READY", url: fileUrl ?? `https://cdn.shopify.com/s/files/1/0766/2777/1738/files/llms-full.txt?v=${versionDrift ? version++ : version}` },
       } });
     }
     if (query.includes("StageRobottoCatalog")) {
@@ -62,12 +65,19 @@ function fixture({ failAfterWrite = false, ambiguous = false, drift = false, for
     assert.equal(variables.files[0].id, id);
     const key = new URL(variables.files[0].originalSource).pathname.slice(1);
     writes.push(key);
+    version++;
     current = ambiguous ? bytes("External change") : payloads.get(key);
     if ((failAfterWrite || ambiguous) && writes.length === 1) throw new Error("Timeout");
     return Response.json({ data: { fileUpdate: { files: [{ id }], userErrors: [] } } });
   } };
   const transport = async (url, options) => {
-    if (url === publicUrl) return new Response(current);
+    if (url.startsWith(publicUrl) || url.startsWith("https://cdn.shopify.com/")) {
+      downloads.push(url);
+      assert.equal(options.redirect, "error");
+      // The unversioned cache deliberately never changes.
+      if (url === publicUrl) return new Response(initial);
+      return new Response(mismatch && url.startsWith(publicUrl) ? bytes("Wrong cache") : current);
+    }
     assert.equal(url, staged + "/");
     assert.equal(options.redirect, "error");
     payloads.set(options.body.get("key"), new Uint8Array(await options.body.get("file").arrayBuffer()));
@@ -75,9 +85,35 @@ function fixture({ failAfterWrite = false, ambiguous = false, drift = false, for
   };
   return {
     input: { admin, transport, wait: async () => {}, backup, candidate, expectedPreviousSha256: sha(backup) },
-    writes, payloads, current: () => current,
+    writes, payloads, downloads, current: () => current,
   };
 }
+
+test("publication and rollback verify Shopify's current version despite stale unversioned cache", async () => {
+  for (const failAfterWrite of [false, true]) {
+    const f = fixture({ failAfterWrite });
+    const result = await publishRobottoCatalog(f.input);
+    assert.equal(result.status, failAfterWrite ? "ROLLED_BACK" : "PUBLISHED");
+    assert.ok(f.downloads.some(url => url === publicUrl + "?v=2"));
+    assert.ok(!f.downloads.includes(publicUrl));
+    if (failAfterWrite) assert.ok(f.downloads.includes(publicUrl + "?v=3"));
+  }
+});
+
+test("wrong file identity, missing or ambiguous versions, mismatched bytes and metadata races stop before writes", async () => {
+  const base = "https://cdn.shopify.com/s/files/1/0766/2777/1738/files/llms-full.txt";
+  for (const fileUrl of [base, base + "?v=x", base + "?v=1&v=2", base + "?v=1&other=2", base.replace("1738", "9999") + "?v=1", base + "?v=1#fragment"]) {
+    const f = fixture({ fileUrl });
+    await assert.rejects(publishRobottoCatalog(f.input), /SHOPIFY_FILE_URL_MISMATCH/);
+    assert.equal(f.writes.length, 0);
+    assert.equal(f.downloads.length, 0);
+  }
+  for (const options of [{ mismatch: true }, { versionDrift: true }]) {
+    const f = fixture(options);
+    await assert.rejects(publishRobottoCatalog(f.input), /PUBLIC_HASH_NOT_VERIFIED/);
+    assert.equal(f.writes.length, 0);
+  }
+});
 
 test("daily Robotto catalog compares links and fails closed on incomplete or foreign data", async t => {
   const directory = await mkdtemp(join(tmpdir(), "robotto-daily-"));
