@@ -104,6 +104,9 @@ jobs:
       - name: Build product webhook worker
         run: npm run build:product-webhook-worker
 
+      - name: Build multishop catalogue worker
+        run: npm run build:multishop-catalog-worker
+
   product-webhook-postgres:
     name: PostgreSQL webhook integration
     needs: verify
