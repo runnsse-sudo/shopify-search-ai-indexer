@@ -1,0 +1,160 @@
+{
+  "status": "DRAFT_NOT_RUNNABLE",
+  "release": "61f80b70d4368d6ab70d27130bbb684d4eea6d5a",
+  "runtimeServiceAccount": "runn-search-ai-indexer-run@runn-search-ai-indexer.iam.gserviceaccount.com",
+  "bucket": "run-sources-runn-search-ai-indexer-europe-north2",
+  "targets": [
+    {
+      "shop": "dxf00a-wf.myshopify.com",
+      "primaryDomain": "www.runns.se",
+      "fileId": null,
+      "cdnPath": null,
+      "fileBindingStatus": "NO_MATCH_IN_READONLY_ADMIN_SEARCH_2026_11_08",
+      "aiIndexerWriteFiles": "NOT_VERIFIED_IN_ADMIN_UI",
+      "offlineSession": "UNKNOWN_NO_DB_OR_SECRET_READ",
+      "prefix": "shops/dxf00a-wf.myshopify.com/llms-full/",
+      "enabled": false,
+      "mode": "PREPARATION_ONLY",
+      "theme": {
+        "id": null,
+        "status": "NOT_VERIFIED",
+        "template": "templates/llms-full.txt.liquid",
+        "existingBodySha256": null
+      },
+      "protectedPaths": [
+        "/agents.md",
+        "/llms.txt"
+      ],
+      "backup": "VERIFY_PREVIOUS_FILE_AND_TEMPLATE_BYTES_BEFORE_REPLACE",
+      "rollback": "RESTORE_ONLY_PINNED_BACKUP_OR_SEPARATELY_APPROVED_OWN_NEW_ARTIFACT_CLEANUP"
+    },
+    {
+      "shop": "1cba5a-f6.myshopify.com",
+      "primaryDomain": "www.hilmaspyssel.se",
+      "fileId": null,
+      "cdnPath": null,
+      "fileBindingStatus": "NO_MATCH_IN_READONLY_ADMIN_SEARCH_2026_11_08",
+      "aiIndexerWriteFiles": "NOT_VERIFIED_IN_ADMIN_UI",
+      "offlineSession": "UNKNOWN_NO_DB_OR_SECRET_READ",
+      "prefix": "shops/1cba5a-f6.myshopify.com/llms-full/",
+      "enabled": false,
+      "mode": "PREPARATION_ONLY",
+      "theme": {
+        "id": null,
+        "status": "NOT_VERIFIED",
+        "template": "templates/llms-full.txt.liquid",
+        "existingBodySha256": null
+      },
+      "protectedPaths": [
+        "/agents.md",
+        "/llms.txt"
+      ],
+      "backup": "VERIFY_PREVIOUS_FILE_AND_TEMPLATE_BYTES_BEFORE_REPLACE",
+      "rollback": "RESTORE_ONLY_PINNED_BACKUP_OR_SEPARATELY_APPROVED_OWN_NEW_ARTIFACT_CLEANUP"
+    },
+    {
+      "shop": "robotto-7143.myshopify.com",
+      "primaryDomain": "www.robotto.se",
+      "fileId": "gid://shopify/GenericFile/62861370655066",
+      "cdnPath": "/s/files/1/0766/2777/1738/files/llms-full.txt",
+      "fileBindingStatus": "PASS_FRESH",
+      "aiIndexerWriteFiles": "PASS_FRESH",
+      "offlineSession": "UNKNOWN_NO_DB_OR_SECRET_READ",
+      "prefix": "robotto/llms-full/",
+      "enabled": false,
+      "mode": "PREPARATION_ONLY",
+      "theme": {
+        "id": null,
+        "status": "NOT_VERIFIED",
+        "template": "templates/llms-full.txt.liquid",
+        "existingBodySha256": null
+      },
+      "protectedPaths": [
+        "/agents.md",
+        "/llms.txt"
+      ],
+      "backup": "VERIFY_PREVIOUS_FILE_AND_TEMPLATE_BYTES_BEFORE_REPLACE",
+      "rollback": "RESTORE_ONLY_PINNED_BACKUP_OR_SEPARATELY_APPROVED_OWN_NEW_ARTIFACT_CLEANUP"
+    },
+    {
+      "shop": "3f457e-2.myshopify.com",
+      "primaryDomain": "www.nerdbutiken.se",
+      "fileId": null,
+      "cdnPath": null,
+      "fileBindingStatus": "NO_MATCH_IN_READONLY_ADMIN_SEARCH_2026_11_08",
+      "aiIndexerWriteFiles": "NOT_VERIFIED_IN_ADMIN_UI",
+      "offlineSession": "UNKNOWN_NO_DB_OR_SECRET_READ",
+      "prefix": "shops/3f457e-2.myshopify.com/llms-full/",
+      "enabled": false,
+      "mode": "PREPARATION_ONLY",
+      "theme": {
+        "id": null,
+        "status": "NOT_VERIFIED",
+        "template": "templates/llms-full.txt.liquid",
+        "existingBodySha256": null
+      },
+      "protectedPaths": [
+        "/agents.md",
+        "/llms.txt"
+      ],
+      "backup": "VERIFY_PREVIOUS_FILE_AND_TEMPLATE_BYTES_BEFORE_REPLACE",
+      "rollback": "RESTORE_ONLY_PINNED_BACKUP_OR_SEPARATELY_APPROVED_OWN_NEW_ARTIFACT_CLEANUP"
+    },
+    {
+      "shop": "94d715-94.myshopify.com",
+      "primaryDomain": "www.felkodslasare.se",
+      "fileId": null,
+      "cdnPath": null,
+      "fileBindingStatus": "NO_MATCH_IN_READONLY_ADMIN_SEARCH_2026_11_08",
+      "aiIndexerWriteFiles": "NOT_VERIFIED_IN_ADMIN_UI",
+      "offlineSession": "UNKNOWN_NO_DB_OR_SECRET_READ",
+      "prefix": "shops/94d715-94.myshopify.com/llms-full/",
+      "enabled": false,
+      "mode": "PREPARATION_ONLY",
+      "theme": {
+        "id": null,
+        "status": "NOT_VERIFIED",
+        "template": "templates/llms-full.txt.liquid",
+        "existingBodySha256": null
+      },
+      "protectedPaths": [
+        "/agents.md",
+        "/llms.txt"
+      ],
+      "backup": "VERIFY_PREVIOUS_FILE_AND_TEMPLATE_BYTES_BEFORE_REPLACE",
+      "rollback": "RESTORE_ONLY_PINNED_BACKUP_OR_SEPARATELY_APPROVED_OWN_NEW_ARTIFACT_CLEANUP"
+    },
+    {
+      "shop": "game-dungeon-9024.myshopify.com",
+      "primaryDomain": "www.gamedungeon.se",
+      "fileId": null,
+      "cdnPath": null,
+      "fileBindingStatus": "NO_MATCH_IN_READONLY_ADMIN_SEARCH_2026_11_08",
+      "aiIndexerWriteFiles": "NOT_VERIFIED_IN_ADMIN_UI",
+      "offlineSession": "UNKNOWN_NO_DB_OR_SECRET_READ",
+      "prefix": "shops/game-dungeon-9024.myshopify.com/llms-full/",
+      "enabled": false,
+      "mode": "PREPARATION_ONLY",
+      "theme": {
+        "id": null,
+        "status": "NOT_VERIFIED",
+        "template": "templates/llms-full.txt.liquid",
+        "existingBodySha256": null
+      },
+      "protectedPaths": [
+        "/agents.md",
+        "/llms.txt"
+      ],
+      "backup": "VERIFY_PREVIOUS_FILE_AND_TEMPLATE_BYTES_BEFORE_REPLACE",
+      "rollback": "RESTORE_ONLY_PINNED_BACKUP_OR_SEPARATELY_APPROVED_OWN_NEW_ARTIFACT_CLEANUP"
+    }
+  ],
+  "missingTargetsAreNotInferred": true,
+  "workerArgs": [
+    "--run-enabled-catalogs-once"
+  ],
+  "image": "europe-north2-docker.pkg.dev/runn-search-ai-indexer/runn-search-ai-indexer/runn-search-ai-indexer@sha256:8494023efbaf1ee79f28a7a61e66b8f36ecb1cc4681abd3c0895cd63ef39fc17",
+  "scheduler": "NOT_CREATED_OR_ACTIVATED",
+  "writeBudget": 0,
+  "sourceEvidence": "READONLY qualification 2026-11-08; no current authorization implied"
+}
