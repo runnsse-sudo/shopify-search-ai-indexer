@@ -33,7 +33,11 @@ old worker. Others use `shops/<myshopify-domain>/llms-full/`. Objects:
 - `daily-state.json`: shop-bound successful check time/hash, generation-CAS
   replacement and readback while holding the lock.
 
-Successful checks are at least 24 hours apart, including across worker restarts.
+Successful checks occur at most once per UTC calendar day, including across
+worker restarts. A fixed daily schedule therefore remains eligible on the next
+UTC day even when the previous check finished after its scheduled start. This
+is a calendar-day rule, not a rolling 24-hour interval; the configured schedule
+must use UTC. Future checkpoint timestamps still block as clock drift.
 `NOT_DUE` skips Shopify reads. Unchanged product-link sets skip all staged uploads
 and file updates (title-only changes intentionally follow the existing policy).
 Changed links require verified backup before staging and updating only the pinned
