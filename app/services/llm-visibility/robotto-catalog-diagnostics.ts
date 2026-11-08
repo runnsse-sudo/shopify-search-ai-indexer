@@ -1,4 +1,9 @@
 const safeCodes = new Set([
+  "CATALOG_WORKER_NOT_ENABLED", "INVALID_CATALOG_TARGET", "INVALID_CATALOG_TARGETS",
+  "CATALOG_TARGET_COLLISION", "CATALOG_SESSION_MISMATCH", "CATALOG_TENANT_MISMATCH",
+  "CATALOG_STATE_TARGET_DRIFT", "CATALOG_CLOCK_DRIFT", "CATALOG_STATE_UNVERIFIED",
+  "CATALOG_LOCK_REQUIRED", "CATALOG_COUNT_UNVERIFIED", "CATALOG_INCOMPLETE",
+  "INVALID_CATALOG_CATALOG", "INVALID_CATALOG_PRODUCT_LINK",
   "ROBOTTO_CATALOG_NOT_ENABLED", "INVALID_ROBOTTO_SESSION", "INVALID_CATALOG_BUCKET",
   "CATALOG_STORAGE_AUTH_FAILED", "CATALOG_STORAGE_METADATA_FAILED",
   "CATALOG_STORAGE_IDENTITY_MISMATCH", "CATALOG_PUBLICATION_LOCKED",
@@ -16,14 +21,17 @@ const safeCodes = new Set([
   "CATALOG_PUBLICATION_MISMATCH", "CATALOG_URL_MISMATCH", "CATALOG_DUPLICATE_URL",
 ]);
 
-export type CatalogPhase = "configuration" | "initialization" | "lock" | "session" | "catalog" | "disconnect";
+export type CatalogPhase = "configuration" | "initialization" | "lock" | "session" | "catalog" | "disconnect"
+  | "checkpoint_read" | "catalog_count" | "catalog_generate" | "file_metadata"
+  | "public_read" | "public_verify" | "compare_links" | "backup" | "stage"
+  | "upload" | "file_update" | "checkpoint_write" | "lock_release";
 
 const safeProviderCodes = new Set([
   "EACCES", "EEXIST", "ENOENT", "ENOSPC", "EROFS", "ETIMEDOUT", "ECONNRESET",
   "P1000", "P1001", "P1002", "P1010", "P1011", "P1017", "P2021", "P2022", "P2024",
 ]);
 
-export function robottoCatalogFailure(error: unknown, phase: CatalogPhase) {
+function safeCode(error: unknown) {
   let code = "CATALOG_UNEXPECTED_ERROR";
   if (error instanceof Error) {
     const providerCode = (error as Error & { code?: unknown }).code;
@@ -31,5 +39,14 @@ export function robottoCatalogFailure(error: unknown, phase: CatalogPhase) {
     else if (typeof providerCode === "string" && safeProviderCodes.has(providerCode)) code = providerCode;
     else if (error.name === "TimeoutError") code = "CATALOG_TIMEOUT";
   }
-  return { status: "REVIEW_REQUIRED", code, phase } as const;
+  return code;
+}
+
+export function robottoCatalogFailure(error: unknown, phase: CatalogPhase) {
+  const code = safeCode(error);
+  const causeCode = error instanceof Error ? safeCode(error.cause) : "CATALOG_UNEXPECTED_ERROR";
+  return {
+    status: "REVIEW_REQUIRED", code, phase,
+    ...(causeCode !== "CATALOG_UNEXPECTED_ERROR" && { causeCode }),
+  } as const;
 }

@@ -2,7 +2,14 @@ import { parseCatalogTargets } from "../app/services/llm-visibility/multishop-ca
 import { catalogPublisher } from "../app/services/llm-visibility/multishop-catalog-publication.server.ts";
 import { catalogStorage } from "../app/services/llm-visibility/multishop-catalog-storage.server.ts";
 
-// Not included in Docker/startup or any scheduler. Activation is a separate operation.
+import {
+  robottoCatalogFailure,
+  type CatalogPhase,
+} from "../app/services/llm-visibility/robotto-catalog-diagnostics.ts";
+
+let phase: CatalogPhase = "configuration";
+
+// Only the explicitly enabled worker entrypoint may invoke publication.
 async function main() {
   if (
     process.argv.slice(2).join(" ") !== "--run-enabled-catalogs-once" ||
@@ -13,12 +20,16 @@ async function main() {
   }
   const targets = parseCatalogTargets(process.env.LLM_CATALOG_TARGETS);
   const bucket = process.env.LLM_CATALOG_BUCKET;
+  phase = "initialization";
   const { default: prisma } = await import("../app/db.server");
   let failed = false;
   try {
     for (const target of targets) {
       try {
-        const result = await catalogPublisher(target).refresh(
+        phase = "lock";
+        const result = await catalogPublisher(target, (next) => {
+          phase = next;
+        }).refresh(
           catalogStorage(bucket, target.shop),
           target.shop,
           async () => {
@@ -31,27 +42,34 @@ async function main() {
         );
         console.log(JSON.stringify({ shop: target.shop, ...result }));
         if (result.status === "ROLLED_BACK") failed = true;
-      } catch {
-        // Do not log provider messages, URLs, session details or tokens.
+      } catch (error: unknown) {
+        // Exact allowlisted codes only; never provider messages or error properties.
+        const failure = robottoCatalogFailure(error, phase);
         console.error(
           JSON.stringify({
             shop: target.shop,
             status: "FAILED",
-            code: "CATALOG_REFRESH_FAILED",
+            code: failure.code,
+            phase: failure.phase,
+            ...(failure.causeCode && { causeCode: failure.causeCode }),
+            reviewRequired: true,
           }),
         );
         failed = true;
       }
     }
   } finally {
-    await prisma.$disconnect();
+    await prisma.$disconnect().catch((error: unknown) => {
+      console.error(JSON.stringify(robottoCatalogFailure(error, "disconnect")));
+      failed = true;
+    });
   }
   if (failed) process.exitCode = 1;
 }
 
-main().catch(() => {
+main().catch((error: unknown) => {
   console.error(
-    JSON.stringify({ status: "FAILED", code: "CATALOG_WORKER_FAILED" }),
+    JSON.stringify(robottoCatalogFailure(error, phase)),
   );
   process.exitCode = 1;
 });
