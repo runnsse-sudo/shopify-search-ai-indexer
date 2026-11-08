@@ -1,6 +1,8 @@
+import type { action as setupAction } from "./app.llm-visibility_.catalog-setup";
+import { CATALOG_SHOPS } from "../services/llm-visibility/multishop-catalog-targets";
 import { useState } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import { requestRobottoFilesAccess, ROBOTTO_SHOP } from "../services/llm-visibility/llm-delivery";
+import { requestCatalogFilesAccess, llmDownload, llmReport, validateLlmAuditRequest } from "../services/llm-visibility/llm-delivery";
 import type {
   ActionFunctionArgs,
   HeadersFunction,
@@ -19,7 +21,6 @@ import {
 
 import prisma from "../db.server";
 import { fetchPrimaryShopDomain } from "../services/shop-info.server";
-import { llmDownload, llmReport, validateLlmAuditRequest } from "../services/llm-visibility/llm-delivery";
 
 import {
   authenticate,
@@ -222,7 +223,7 @@ function robotsGroupText(
 }
 
 
-function RobottoFilesAccess() {
+function CatalogFilesAccess({ shop }: { shop: string }) {
   const shopify = useAppBridge();
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -231,7 +232,7 @@ function RobottoFilesAccess() {
     setBusy(true);
     setStatus("");
     try {
-      const granted = await requestRobottoFilesAccess(shopify.scopes);
+      const granted = await requestCatalogFilesAccess(shop, shopify.scopes);
       setStatus(granted ? "Shopify har beviljat filåtkomst." : "Shopify har inte beviljat filåtkomst.");
     } catch {
       setStatus("Filåtkomsten kunde inte verifieras. Försök igen.");
@@ -247,6 +248,32 @@ function RobottoFilesAccess() {
       </button>
       <p role="status">{status}</p>
     </div>
+  );
+}
+
+function CatalogSetup() {
+  const setup = useFetcher<typeof setupAction>();
+  const manifest = setup.data?.manifest;
+  const fileMessage = manifest?.fileStatus === "EXISTING_FILE_READY"
+    ? "En befintlig katalogfil är verifierad."
+    : manifest?.fileStatus === "INITIAL_FILE_REQUIRED"
+      ? "Ingen katalogfil hittades. En första publicering behöver godkännas separat."
+      : "Filkopplingen behöver verifieras innan publicering.";
+  return (
+    <s-section heading="Förbered butikens katalog">
+      <s-paragraph>Kontrollera butikens filåtkomst och katalogkoppling. Kontrollen ändrar inga behörigheter, publicerar inga filer och startar ingen daglig körning.</s-paragraph>
+      <setup.Form method="post" action="/app/llm-visibility/catalog-setup">
+        <input type="hidden" name="intent" value="prepare-catalog-setup" />
+        <button type="submit" disabled={setup.state !== "idle"}>Kontrollera katalogkoppling</button>
+      </setup.Form>
+      {setup.data?.error && <p role="alert">{setup.data.error}</p>}
+      {manifest && <div role="status">
+        <p>{fileMessage}</p>
+        <p>{manifest.fileAccess === "GRANTED" ? "Filåtkomst är beviljad." : "Filåtkomst behöver beviljas av butiken i ett separat steg."}</p>
+        <p>Aktivt tema, backup och körbehörighet återstår att verifiera. Daglig uppdatering är avstängd.</p>
+        <a href={llmDownload(JSON.stringify(manifest, null, 2) + "\n", "json")} download="llms-full-setup.json">Ladda ned publiceringsunderlag</a>
+      </div>}
+    </s-section>
   );
 }
 
@@ -282,7 +309,8 @@ export default function LlmVisibility() {
     <s-page
       heading="AI / LLM Visibility"
     >
-      {shopDomain === ROBOTTO_SHOP && <s-section heading="Shopify Files"><RobottoFilesAccess /></s-section>}
+      {CATALOG_SHOPS.some((shop) => shop === shopDomain) && <s-section heading="Shopify Files"><CatalogFilesAccess shop={shopDomain} /></s-section>}
+      {CATALOG_SHOPS.some((shop) => shop === shopDomain) && <CatalogSetup />}
       <s-section
         heading="AI discovery check"
       >

@@ -25,7 +25,7 @@ export function validateCatalogTarget(
       value.primaryDomain,
     ) ||
     !/^gid:\/\/shopify\/GenericFile\/[1-9]\d*$/.test(value.fileId) ||
-    !/^\/s\/files\/1\/\d{4}\/\d{4}\/files\/llms-full\.txt$/.test(value.cdnPath)
+    !/^\/s\/files\/1\/(?:\d{4}\/){2,3}files\/llms-full\.txt$/.test(value.cdnPath)
   ) {
     throw new Error("INVALID_CATALOG_TARGET");
   }

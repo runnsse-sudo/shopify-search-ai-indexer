@@ -1,0 +1,38 @@
+{
+  "status": "PROPOSAL_ONLY_NO_IAM_CHANGE",
+  "project": "runn-search-ai-indexer",
+  "bucket": "run-sources-runn-search-ai-indexer-europe-north2",
+  "member": "serviceAccount:runn-search-ai-indexer-run@runn-search-ai-indexer.iam.gserviceaccount.com",
+  "reuseExistingRolesWithoutChanges": true,
+  "additions": [
+    {
+      "role": "projects/runn-search-ai-indexer/roles/robottoCatalogLock",
+      "members": [
+        "serviceAccount:runn-search-ai-indexer-run@runn-search-ai-indexer.iam.gserviceaccount.com"
+      ],
+      "condition": {
+        "title": "six_shop_catalog_exact_locks_and_state",
+        "expression": "resource.type == 'storage.googleapis.com/Object' && resource.name in [\"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/dxf00a-wf.myshopify.com/llms-full/daily-state.json\", \"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/1cba5a-f6.myshopify.com/llms-full/daily-state.json\", \"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/robotto/llms-full/daily-state.json\", \"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/3f457e-2.myshopify.com/llms-full/daily-state.json\", \"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/94d715-94.myshopify.com/llms-full/daily-state.json\", \"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/game-dungeon-9024.myshopify.com/llms-full/daily-state.json\", \"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/dxf00a-wf.myshopify.com/llms-full/publication.lock\", \"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/1cba5a-f6.myshopify.com/llms-full/publication.lock\", \"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/3f457e-2.myshopify.com/llms-full/publication.lock\", \"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/94d715-94.myshopify.com/llms-full/publication.lock\", \"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/game-dungeon-9024.myshopify.com/llms-full/publication.lock\"]"
+      }
+    },
+    {
+      "role": "projects/runn-search-ai-indexer/roles/robottoCatalogBackup",
+      "members": [
+        "serviceAccount:runn-search-ai-indexer-run@runn-search-ai-indexer.iam.gserviceaccount.com"
+      ],
+      "condition": {
+        "title": "five_shop_catalog_backup_prefixes",
+        "expression": "resource.type == 'storage.googleapis.com/Object' && resource.name.endsWith('.txt') && (resource.name.startsWith(\"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/dxf00a-wf.myshopify.com/llms-full/backup/\") || resource.name.startsWith(\"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/1cba5a-f6.myshopify.com/llms-full/backup/\") || resource.name.startsWith(\"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/3f457e-2.myshopify.com/llms-full/backup/\") || resource.name.startsWith(\"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/94d715-94.myshopify.com/llms-full/backup/\") || resource.name.startsWith(\"projects/_/buckets/run-sources-runn-search-ai-indexer-europe-north2/objects/shops/game-dungeon-9024.myshopify.com/llms-full/backup/\"))"
+      }
+    }
+  ],
+  "preserveAllExistingBindings": true,
+  "requiredBeforeApply": [
+    "Fresh IAM read, role permission comparison and current etag",
+    "Separate explicit IAM approval",
+    "Inherited and deny policy evaluation if available",
+    "No job, file or scheduler operation implied"
+  ],
+  "checkpointOverwrite": "generation-CAS needs create and delete; object get required for verification",
+  "limitation": "Observed bindings do not independently prove all effective inherited/deny policy behavior"
+}
