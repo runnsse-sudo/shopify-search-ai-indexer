@@ -235,6 +235,62 @@ for (let i = 0; i < 6; i++)
     assert.equal(f.writes.length, 1);
   });
 
+test("fixed daily schedule remains due after previous completion delay and restart", async () => {
+  const t = target(0),
+    f = provider(t);
+  const start = Date.UTC(2026, 10, 8, 3);
+  let tick = 0;
+  await f.run(() => (tick++ === 0 ? start : start + 120_000));
+  assert.equal(f.state().completedAt, start + 120_000);
+  const calls = f.calls.length;
+  assert.equal((await f.run(() => start + 3_600_000)).status, "NOT_DUE");
+  assert.equal(f.calls.length, calls);
+  const restarted = catalogPublisher(t);
+  assert.equal(
+    (
+      await restarted.refresh(
+        f.storage,
+        t.shop,
+        f.admin,
+        f.transport,
+        () => start + 86_400_000,
+      )
+    ).status,
+    "UNCHANGED",
+  );
+  assert.equal(f.writes.length, 1);
+  const nextCalls = f.calls.length;
+  assert.equal((await f.run(() => start + 86_400_000 + 1)).status, "NOT_DUE");
+  assert.equal(f.calls.length, nextCalls);
+});
+
+test("UTC day boundary is due without local timezone or DST assumptions", async () => {
+  const f = provider(target(0), { unchanged: true });
+  const midnight = Date.UTC(2026, 9, 25);
+  await f.run(() => midnight - 1);
+  assert.equal((await f.run(() => midnight)).status, "UNCHANGED");
+  const calls = f.calls.length;
+  assert.equal(
+    (await f.run(() => midnight + 86_400_000 - 1)).status,
+    "NOT_DUE",
+  );
+  assert.equal(f.calls.length, calls);
+  assert.equal(f.writes.length, 0);
+});
+
+test("future completion timestamp remains blocked before Shopify access", async () => {
+  const f = provider(target(0), { unchanged: true });
+  const completed = Date.UTC(2026, 10, 8, 3);
+  await f.run(() => completed);
+  const calls = f.calls.length;
+  await assert.rejects(
+    f.run(() => completed - 1),
+    /CATALOG_CLOCK_DRIFT/,
+  );
+  assert.equal(f.calls.length, calls);
+  assert.equal(f.writes.length, 0);
+});
+
 test("unchanged links skip staging, publication and backup", async () => {
   const f = provider(target(0), { unchanged: true });
   assert.equal((await f.run()).status, "UNCHANGED");

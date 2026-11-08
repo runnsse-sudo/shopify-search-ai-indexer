@@ -160,7 +160,8 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
       if (
         state &&
         (state.completedAt > started ||
-          started - state.completedAt < 86_400_000)
+          Math.floor(started / 86_400_000) ===
+            Math.floor(state.completedAt / 86_400_000))
       ) {
         if (state.completedAt > started) throw new Error("CATALOG_CLOCK_DRIFT");
         return { status: "NOT_DUE", sha256: state.sha256 } as const;
