@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { build, transform } from "esbuild";
+import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
 
 import {
   AI_CRAWLERS,
@@ -20,7 +21,18 @@ const deliverySource = await readFile(
   new URL("../app/services/llm-visibility/llm-delivery.ts", import.meta.url),
   "utf8",
 );
-const { code: deliveryCode } = await transform(deliverySource, { loader: "ts", format: "esm" });
+const { outputFiles } = await build({
+  stdin: {
+    contents: deliverySource,
+    loader: "ts",
+    resolveDir: fileURLToPath(new URL("../app/services/llm-visibility/", import.meta.url)),
+  },
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  write: false,
+});
+const deliveryCode = outputFiles[0].text;
 const { llmReport, validateLlmAuditRequest } = await import(
   `data:text/javascript,${encodeURIComponent(deliveryCode)}`
 );
