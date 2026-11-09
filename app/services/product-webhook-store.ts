@@ -42,11 +42,14 @@ export async function acceptProductWebhookWithClient(
     (input.triggeredAt?.length ?? 0) > 128
   )
     throw new Error("INVALID_PRODUCT_WEBHOOK_INPUT");
-  const shop = await client.shop.upsert({
-    where: { domain: input.shopDomain },
-    create: { domain: input.shopDomain },
-    update: {},
-  });
+  // Existing shops need no write lock. Under Serializable isolation an empty
+  // upsert still contends on this shared row for every duplicate delivery.
+  const shop = await client.shop.findUnique({ where: { domain: input.shopDomain } }) ??
+    await client.shop.upsert({
+      where: { domain: input.shopDomain },
+      create: { domain: input.shopDomain },
+      update: {},
+    });
   const result = await client.webhookReceipt.createMany({
     data: {
       shopId: shop.id,

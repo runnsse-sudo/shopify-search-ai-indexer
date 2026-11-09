@@ -409,6 +409,22 @@ async function main() {
     const shopCount = await full.db.shop.count();
     console.log("DUP_SHOPS=" + diagnostics.safeCount(shopCount));
     assert.equal(shopCount, 1);
+    // Repeat the same 16-way cold-shop contention without weakening any invariant.
+    // All rows live in this test's disposable schema, never a runtime database.
+    for (let round = 0; round < 5; round++) {
+      const repeatedIdentity = identity("duplicate-repeat-" + round);
+      const repeated = await fanout("DUPLICATE", 16, (db) =>
+        tx(db, (connection) => store.acceptProductWebhookWithClient(connection, repeatedIdentity, at())));
+      assert.equal(repeated.filter(value => value === "ACCEPTED").length, 1);
+      assert.equal(repeated.filter(value => value === "DUPLICATE_DURABLE").length, 15);
+      const repeatedShop = await full.db.shop.findUniqueOrThrow({ where: { domain: repeatedIdentity.shopDomain } });
+      assert.equal(await full.db.webhookReceipt.count({ where: { shopId: repeatedShop.id } }), 1);
+      await full.db.webhookReceipt.deleteMany({ where: { shopId: repeatedShop.id } });
+      await full.db.shop.delete({ where: { id: repeatedShop.id } });
+    }
+    assert.equal(await full.db.shop.count(), 1);
+    assert.equal(await full.db.webhookReceipt.count(), 1);
+    console.log("DUPLICATE_REPEAT_ROUNDS=5; FANOUT_PER_ROUND=16; ERRORS=0; RECEIPTS_PER_ROUND=1");
     diagnostics.stage("LEASE_SETUP");
     // Pre-existing row isolates the lease CAS from independent initial upsert contention.
     await full.db.providerAutomationLease.upsert({ where: { key: store.PRODUCT_WEBHOOK_LEASE_KEY }, create: { key: store.PRODUCT_WEBHOOK_LEASE_KEY }, update: {} });

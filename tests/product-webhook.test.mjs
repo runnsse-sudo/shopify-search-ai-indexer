@@ -1099,3 +1099,25 @@ test("domain changed after core read uses transaction current domain; stale owne
     }
   }
 });
+
+
+test("duplicate intake reads existing shop without repeating shared-row upsert", async () => {
+  const f = webhookFixture(); let upserts = 0;
+  const original = f.client.shop.upsert;
+  f.client.shop.upsert = async args => { upserts++; return original(args); };
+  assert.equal(await add(f), "ACCEPTED");
+  assert.equal(upserts, 1);
+  assert.equal(await add(f), "DUPLICATE_DURABLE");
+  assert.equal(upserts, 1);
+  assert.equal(await add(f, { webhookId: "delivery-2" }), "ACCEPTED");
+  assert.equal(upserts, 1);
+  assert.equal(f.state.shops.length, 1); assert.equal(f.state.receipts.length, 2);
+  assert.equal(await add(f, { shopDomain: "other.myshopify.com" }), "ACCEPTED");
+  assert.equal(upserts, 2); assert.equal(f.state.shops.length, 2);
+});
+test("shop read failure aborts intake before upsert or receipt mutation", async () => {
+  const f = webhookFixture(); const error = new Error("SYNTHETIC_SHOP_READ_FAILURE");
+  f.client.shop.findUnique = async () => { throw error; };
+  await assert.rejects(add(f), e => e === error);
+  assert.equal(f.state.shops.length, 0); assert.equal(f.state.receipts.length, 0);
+});
