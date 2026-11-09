@@ -25,6 +25,10 @@ const text = (t, handle = "old") =>
 function provider(t, options = {}) {
   let current = text(t, options.previousHandle ?? "old");
   let version = 1;
+  let metadataReads = 0,
+    ownReads = 0,
+    postWriteOwnReads = 0,
+    waits = 0;
   const payloads = new Map();
   const calls = [];
   const writes = [];
@@ -90,6 +94,7 @@ function provider(t, options = {}) {
         });
       }
       if (operation.includes("ReadRobottoCatalog")) {
+        metadataReads++;
         assert.equal(args.variables.id, t.fileId);
         return Response.json({
           data: {
@@ -105,8 +110,11 @@ function provider(t, options = {}) {
             },
             node: {
               id: t.fileId,
-              fileStatus: "READY",
-              url: `https://cdn.shopify.com${options.wrongCdn ?? t.cdnPath}?v=${version}`,
+              fileStatus:
+                options.notReadyOnSecond && metadataReads === 2
+                  ? "PROCESSING"
+                  : "READY",
+              url: `https://cdn.shopify.com${options.wrongCdn ?? t.cdnPath}?v=${(options.metadataDrift && metadataReads === 2) || (options.crossRetryDrift && metadataReads > 2) ? version + 1 : version}`,
             },
           },
         });
@@ -159,6 +167,16 @@ function provider(t, options = {}) {
     }
     assert.ok(["cdn.shopify.com", t.primaryDomain].includes(url.hostname));
     assert.match(url.search, /^\?v=\d+$/);
+    if (url.hostname === t.primaryDomain) {
+      ownReads++;
+      if (writes.length) postWriteOwnReads++;
+      if (
+        (!writes.length && ownReads <= (options.initialMismatchReads ?? 0)) ||
+        (writes.length &&
+          postWriteOwnReads <= (options.postWriteMismatchReads ?? 0))
+      )
+        return new Response(text(t, "cached-old-version"));
+    }
     return new Response(
       options.badReadback && version > 1 ? text(t, "wrong") : current,
     );
@@ -174,8 +192,19 @@ function provider(t, options = {}) {
     current: () => current,
     state: () => state,
     locked: () => locked,
+    waits: () => waits,
+    ownReads: () => ownReads,
     run: (clock = () => 100_000_000) =>
-      catalogPublisher(t, options.onPhase).refresh(storage, t.shop, admin, transport, clock),
+      catalogPublisher(t, options.onPhase).refresh(
+        storage,
+        t.shop,
+        admin,
+        transport,
+        clock,
+        async () => {
+          waits++;
+        },
+      ),
   };
 }
 
@@ -528,46 +557,115 @@ test("corrupt or cross-shop durable checkpoint blocks without releasing its lock
   assert.equal(removed, false);
 });
 
-// Diagnostics must observe the existing fail-closed path, never create a retry/release.
-for (const scenario of ["count", "generation", "invalid-encoded-handle", "public-readback", "backup", "stage", "update", "checkpoint"]) {
+// Terminal failures retain lock/state semantics; only bounded read-only CDN retries are allowed.
+for (const scenario of [
+  "count",
+  "generation",
+  "invalid-encoded-handle",
+  "public-readback",
+  "backup",
+  "stage",
+  "update",
+  "checkpoint",
+]) {
   test(`diagnostic phase and original stop/lock semantics: ${scenario}`, async () => {
     let phase;
     const t = target(1);
-    const f = provider(t, { onPhase: (next) => { phase = next; } });
+    const f = provider(t, {
+      onPhase: (next) => {
+        phase = next;
+      },
+    });
     const original = f.admin.graphql;
     f.admin.graphql = async (operation, args) => {
       if (scenario === "count" && operation.includes("DailyCatalogCount"))
-        return Response.json({ data: null, errors: [{ message: "private provider data" }] });
+        return Response.json({
+          data: null,
+          errors: [{ message: "private provider data" }],
+        });
       if (scenario === "generation" && operation.includes("PublicLlmCatalog"))
         throw new Error("CATALOG_URL_MISMATCH");
-      if (scenario === "invalid-encoded-handle" && operation.includes("PublicLlmCatalog"))
-        return Response.json({data:{products:{nodes:[{legacyResourceId:"1",title:"Synthetic public product",status:"ACTIVE",onlineStoreUrl:`https://${t.primaryDomain}/products/synthetic%C2-product`}],pageInfo:{hasNextPage:false}}}});
+      if (
+        scenario === "invalid-encoded-handle" &&
+        operation.includes("PublicLlmCatalog")
+      )
+        return Response.json({
+          data: {
+            products: {
+              nodes: [
+                {
+                  legacyResourceId: "1",
+                  title: "Synthetic public product",
+                  status: "ACTIVE",
+                  onlineStoreUrl: `https://${t.primaryDomain}/products/synthetic%C2-product`,
+                },
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          },
+        });
       if (scenario === "stage" && operation.includes("StageRobottoCatalog"))
-        return Response.json({ data: { stagedUploadsCreate: { stagedTargets: [], userErrors: [{ message: "private upload target" }] } } });
+        return Response.json({
+          data: {
+            stagedUploadsCreate: {
+              stagedTargets: [],
+              userErrors: [{ message: "private upload target" }],
+            },
+          },
+        });
       if (scenario === "update" && operation.includes("ReplaceRobottoCatalog"))
-        return Response.json({ data: { fileUpdate: { files: [], userErrors: [{ message: "private file detail" }] } } });
+        return Response.json({
+          data: {
+            fileUpdate: {
+              files: [],
+              userErrors: [{ message: "private file detail" }],
+            },
+          },
+        });
       return original(operation, args);
     };
-    if (scenario === "backup") f.storage.persistBackup = async () => { throw new Error("PERSISTED_BACKUP_MISMATCH"); };
-    if (scenario === "checkpoint") f.storage.saveDailyState = async () => { throw new Error("CATALOG_STATE_UNVERIFIED"); };
-    const transport = scenario === "public-readback"
-      ? async (url) => new Response(new URL(url).hostname === t.primaryDomain ? text(t, "foreign") : text(t))
-      : f.transport;
+    if (scenario === "backup")
+      f.storage.persistBackup = async () => {
+        throw new Error("PERSISTED_BACKUP_MISMATCH");
+      };
+    if (scenario === "checkpoint")
+      f.storage.saveDailyState = async () => {
+        throw new Error("CATALOG_STATE_UNVERIFIED");
+      };
+    const transport =
+      scenario === "public-readback"
+        ? async (url) =>
+            new Response(
+              new URL(url).hostname === t.primaryDomain
+                ? text(t, "foreign")
+                : text(t),
+            )
+        : f.transport;
     const expected = {
       count: ["catalog_count", "CATALOG_COUNT_UNVERIFIED"],
       generation: ["catalog_generate", "CATALOG_URL_MISMATCH"],
       "invalid-encoded-handle": ["catalog_generate", "CATALOG_URL_MISMATCH"],
-      "public-readback": ["public_verify", "PUBLIC_HASH_NOT_VERIFIED"],
+      "public-readback": ["public_verify", "PUBLIC_CDN_HASH_MISMATCH"],
       backup: ["backup", "PERSISTED_BACKUP_MISMATCH"],
       stage: ["stage", "STAGING_REJECTED"],
       update: ["public_verify", "PUBLICATION_UNCONFIRMED"],
       checkpoint: ["checkpoint_write", "CATALOG_STATE_UNVERIFIED"],
     }[scenario];
     await assert.rejects(
-      catalogPublisher(t, (next) => { phase = next; }).refresh(f.storage, t.shop, f.admin, transport, () => 100_000_000),
+      catalogPublisher(t, (next) => {
+        phase = next;
+      }).refresh(
+        f.storage,
+        t.shop,
+        f.admin,
+        transport,
+        () => 100_000_000,
+        async () => {},
+      ),
       (error) => {
         assert.equal(error.message, expected[1]);
-        if (scenario === "update") assert.equal(error.cause.message, "FILE_UPDATE_REJECTED");
+        if (scenario === "update")
+          assert.equal(error.cause.message, "FILE_UPDATE_REJECTED");
         return true;
       },
     );
@@ -582,7 +680,23 @@ test("diagnostics cover successful checkpoint and release without extra provider
   const phases = [];
   const f = provider(target(0), { onPhase: (p) => phases.push(p) });
   assert.equal((await f.run()).status, "PUBLISHED");
-  for (const phase of ["lock", "checkpoint_read", "session", "catalog_count", "catalog_generate", "file_metadata", "public_read", "public_verify", "compare_links", "backup", "stage", "upload", "file_update", "checkpoint_write", "lock_release"])
+  for (const phase of [
+    "lock",
+    "checkpoint_read",
+    "session",
+    "catalog_count",
+    "catalog_generate",
+    "file_metadata",
+    "public_read",
+    "public_verify",
+    "compare_links",
+    "backup",
+    "stage",
+    "upload",
+    "file_update",
+    "checkpoint_write",
+    "lock_release",
+  ])
     assert.ok(phases.includes(phase), phase);
   assert.equal(f.locked(), false);
   assert.equal(f.writes.length, 1);
@@ -593,24 +707,40 @@ test("diagnostics cover successful checkpoint and release without extra provider
   assert.equal(f.calls.length, calls);
 });
 
-for (const release of [false,true]) {
-  test(`lock ${release ? "release" : "acquisition"} failure preserves diagnostics and never retries`,async()=>{
-    const t=target(0);const f=provider(t);let phase;let attempts=0;
-    const original=f.storage.withLock;
-    f.storage.withLock=async(run)=>{
+for (const release of [false, true]) {
+  test(`lock ${release ? "release" : "acquisition"} failure preserves diagnostics and never retries`, async () => {
+    const t = target(0);
+    const f = provider(t);
+    let phase;
+    let attempts = 0;
+    const original = f.storage.withLock;
+    f.storage.withLock = async (run) => {
       attempts++;
-      if(!release)throw new Error("CATALOG_PUBLICATION_LOCKED");
-      return original(async()=>{await run();throw new Error("CATALOG_LOCK_RELEASE_UNCONFIRMED");});
+      if (!release) throw new Error("CATALOG_PUBLICATION_LOCKED");
+      return original(async () => {
+        await run();
+        throw new Error("CATALOG_LOCK_RELEASE_UNCONFIRMED");
+      });
     };
-    await assert.rejects(catalogPublisher(t,p=>{phase=p;}).refresh(f.storage,t.shop,f.admin,f.transport,()=>100_000_000),release?/LOCK_RELEASE_UNCONFIRMED/:/PUBLICATION_LOCKED/);
-    assert.equal(phase,release?"lock_release":"lock");assert.equal(attempts,1);assert.equal(f.writes.length,release?1:0);
-    if(release)assert.equal(f.locked(),true);
-    else assert.equal(f.calls.length,0);
+    await assert.rejects(
+      catalogPublisher(t, (p) => {
+        phase = p;
+      }).refresh(f.storage, t.shop, f.admin, f.transport, () => 100_000_000),
+      release ? /LOCK_RELEASE_UNCONFIRMED/ : /PUBLICATION_LOCKED/,
+    );
+    assert.equal(phase, release ? "lock_release" : "lock");
+    assert.equal(attempts, 1);
+    assert.equal(f.writes.length, release ? 1 : 0);
+    if (release) assert.equal(f.locked(), true);
+    else assert.equal(f.calls.length, 0);
   });
 }
 
-
-for (const handle of ["kos%C2%AE-par-puca%C2%AE-opaque", "dropduo%C2%AE-crystal", "wibeduo%c2%ae-metallic"]) {
+for (const handle of [
+  "kos%C2%AE-par-puca%C2%AE-opaque",
+  "dropduo%C2%AE-crystal",
+  "wibeduo%c2%ae-metallic",
+]) {
   test(`valid percent-encoded product survives generate, backup, publication and checkpoint: ${handle}`, async () => {
     const t = target(1);
     const f = provider(t, { handle });
@@ -626,8 +756,83 @@ for (const handle of ["kos%C2%AE-par-puca%C2%AE-opaque", "dropduo%C2%AE-crystal"
 }
 
 test("encoded-path checks preserve previously accepted ASCII backup paths", async () => {
-  const f = provider(target(1), { previousHandle: "old~handle", handle: "new%C2%AE-handle" });
+  const f = provider(target(1), {
+    previousHandle: "old~handle",
+    handle: "new%C2%AE-handle",
+  });
   assert.equal((await f.run()).status, "PUBLISHED");
   assert.equal(f.backups.size, 1);
   assert.equal(f.locked(), false);
+});
+
+test("stable CDN propagation mismatch before backup is retried without mutations", async () => {
+  const f = provider(target(0), { unchanged: true, initialMismatchReads: 2 });
+  assert.equal((await f.run()).status, "UNCHANGED");
+  assert.equal(f.waits(), 2);
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.backups.size, 0);
+  assert.equal(f.locked(), false);
+});
+test("persistent baseline CDN mismatch stops at six reads and retains lock", async () => {
+  const f = provider(target(0), { initialMismatchReads: 100 });
+  await assert.rejects(f.run(), (e) => {
+    assert.equal(e.message, "PUBLIC_CDN_HASH_MISMATCH");
+    assert.notEqual(e.evidence.canonicalSha256, e.evidence.downloadSha256);
+    assert.equal(e.evidence.beforeVersion, e.evidence.afterVersion);
+    return true;
+  });
+  assert.equal(f.waits(), 5);
+  assert.equal(f.ownReads(), 6);
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.backups.size, 0);
+  assert.equal(f.state(), null);
+  assert.equal(f.locked(), true);
+});
+for (const options of [{ metadataDrift: true }, { notReadyOnSecond: true }])
+  test(
+    "metadata/READY drift is not retried as CDN delay " +
+      JSON.stringify(options),
+    async () => {
+      const f = provider(target(0), options);
+      await assert.rejects(f.run(), /PUBLIC_FILE_VERSION_DRIFT/);
+      assert.equal(f.waits(), 0);
+      assert.equal(f.writes.length, 0);
+      assert.equal(f.backups.size, 0);
+      assert.equal(f.locked(), true);
+    },
+  );
+test("CDN propagation after replace recovers with one write and verified backup", async () => {
+  const f = provider(target(0), { postWriteMismatchReads: 2 });
+  assert.equal((await f.run()).status, "PUBLISHED");
+  assert.equal(f.waits(), 2);
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.backups.size, 1);
+  assert.ok(f.state());
+  assert.equal(f.locked(), false);
+});
+test("persistent post-write mismatch preserves original error through uncertain rollback preflight", async () => {
+  const f = provider(target(0), { postWriteMismatchReads: 100 });
+  await assert.rejects(f.run(), (e) => {
+    assert.equal(e.message, "PUBLICATION_UNCONFIRMED");
+    assert.equal(e.cause.message, "PUBLIC_CDN_HASH_MISMATCH");
+    assert.equal(e.cause.evidence.beforeVersion, "2");
+    return true;
+  });
+  assert.equal(f.waits(), 5);
+  assert.equal(f.writes.length, 1, "no blind rollback");
+  assert.equal(f.backups.size, 1);
+  assert.equal(f.state(), null);
+  assert.equal(f.locked(), true);
+});
+
+test("version changes between CDN retries stop without accepting new baseline", async () => {
+  const f = provider(target(0), {
+    initialMismatchReads: 1,
+    crossRetryDrift: true,
+  });
+  await assert.rejects(f.run(), /PUBLIC_FILE_VERSION_DRIFT/);
+  assert.equal(f.waits(), 1);
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.backups.size, 0);
+  assert.equal(f.locked(), true);
 });

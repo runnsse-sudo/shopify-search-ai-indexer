@@ -52,6 +52,7 @@ async function main() {
             code: failure.code,
             phase: failure.phase,
             ...(failure.causeCode && { causeCode: failure.causeCode }),
+            ...(failure.verification && { verification: failure.verification }),
             reviewRequired: true,
           }),
         );
@@ -68,8 +69,6 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
-  console.error(
-    JSON.stringify(robottoCatalogFailure(error, phase)),
-  );
+  console.error(JSON.stringify(robottoCatalogFailure(error, phase)));
   process.exitCode = 1;
 });

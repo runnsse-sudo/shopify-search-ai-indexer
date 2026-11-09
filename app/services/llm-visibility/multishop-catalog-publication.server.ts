@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
-import type { CatalogPhase } from "./robotto-catalog-diagnostics.ts";
+import {
+  CatalogVerificationError,
+  type CatalogPhase,
+} from "./robotto-catalog-diagnostics.ts";
 import type { AdminGraphqlClient } from "../shopify-product.server";
-import { generatePublicLlmCatalog, isPublicProductPath } from "./llm-catalog.server.ts";
+import {
+  generatePublicLlmCatalog,
+  isPublicProductPath,
+} from "./llm-catalog.server.ts";
 import {
   validateCatalogTarget,
   type CatalogTarget,
@@ -135,6 +141,7 @@ export function catalogPublisher(
   async function readVerifiedCatalog(
     admin: AdminGraphqlClient,
     transport: typeof fetch,
+    expectedVersion?: string,
   ) {
     const file = await inspectCatalog(admin);
     if (!file) throw new Error("FILE_NOT_READY");
@@ -142,12 +149,26 @@ export function catalogPublisher(
     const published = await readPublicCatalog(transport, file.download);
     const current = await inspectCatalog(admin);
     onPhase("public_verify");
+    const evidence = {
+      observedAt: new Date().toISOString(),
+      canonicalSha256: sha(canonical),
+      downloadSha256: sha(published),
+      canonicalBytes: canonical.length,
+      downloadBytes: published.length,
+      beforeVersion: new URL(file.canonical).searchParams.get("v")!,
+      afterVersion: current
+        ? new URL(current.canonical).searchParams.get("v")!
+        : null,
+    };
+    // Version/READY drift is never treated as cache propagation.
     if (
-      sha(canonical) !== sha(published) ||
-      current?.canonical !== file.canonical
-    ) {
-      throw new Error("PUBLIC_HASH_NOT_VERIFIED");
-    }
+      current?.canonical !== file.canonical ||
+      (expectedVersion !== undefined &&
+        evidence.beforeVersion !== expectedVersion)
+    )
+      throw new CatalogVerificationError("PUBLIC_FILE_VERSION_DRIFT", evidence);
+    if (evidence.canonicalSha256 !== evidence.downloadSha256)
+      throw new CatalogVerificationError("PUBLIC_CDN_HASH_MISMATCH", evidence);
     return published;
   }
 
@@ -157,6 +178,8 @@ export function catalogPublisher(
     admin: AdminGraphqlClient | (() => Promise<AdminGraphqlClient>),
     transport: typeof fetch = fetch,
     now = () => Date.now(),
+    propagationWait = () =>
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
   ) {
     if (sessionShop !== shop || storage.shop !== shop)
       throw new Error("CATALOG_TENANT_MISMATCH");
@@ -207,7 +230,27 @@ export function catalogPublisher(
       const candidate = Buffer.from(catalog.text);
       if (catalog.count !== total.count || candidate.length > limit)
         throw new Error("CATALOG_INCOMPLETE");
-      const backup = await readVerifiedCatalog(client, transport);
+      let backup!: Uint8Array;
+      let baselineVersion: string | undefined;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        try {
+          backup = await readVerifiedCatalog(
+            client,
+            transport,
+            baselineVersion,
+          );
+          break;
+        } catch (error: unknown) {
+          if (
+            !(error instanceof CatalogVerificationError) ||
+            error.message !== "PUBLIC_CDN_HASH_MISMATCH" ||
+            attempt === 5
+          )
+            throw error;
+          baselineVersion = error.evidence.beforeVersion;
+          await propagationWait();
+        }
+      }
       onPhase("compare_links");
       const previous = productLinks(backup);
       const next = productLinks(candidate);
@@ -226,6 +269,7 @@ export function catalogPublisher(
           candidate,
           backup: stored,
           expectedPreviousSha256: sha(backup),
+          wait: propagationWait,
         });
       }
       if (outcome.status !== "ROLLED_BACK") {
@@ -278,8 +322,8 @@ export function catalogPublisher(
       return inspectCatalog(admin);
     }
 
-    async function readPublic() {
-      return sha(await readVerifiedCatalog(admin, transport));
+    async function readPublic(expectedVersion?: string) {
+      return sha(await readVerifiedCatalog(admin, transport, expectedVersion));
     }
 
     async function stage(bytes: Uint8Array) {
@@ -356,8 +400,20 @@ export function catalogPublisher(
     }
 
     async function verify(expected: string) {
+      let version: string | undefined;
       for (let attempt = 0; attempt < 6; attempt++) {
-        if ((await inspect()) && (await readPublic()) === expected) return;
+        try {
+          if ((await inspect()) && (await readPublic(version)) === expected)
+            return;
+        } catch (error: unknown) {
+          if (
+            !(error instanceof CatalogVerificationError) ||
+            error.message !== "PUBLIC_CDN_HASH_MISMATCH" ||
+            attempt === 5
+          )
+            throw error;
+          version = error.evidence.beforeVersion;
+        }
         if (attempt < 5) await wait();
       }
       throw new Error("PUBLIC_HASH_NOT_VERIFIED");
@@ -380,9 +436,16 @@ export function catalogPublisher(
       return { status: "PUBLISHED", sha256: newSha } as const;
     } catch (error: unknown) {
       // A timeout may hide a successful write. Only roll back a confirmed candidate.
-      if (!(await inspect()) || (await readPublic()) !== newSha) {
+      let confirmedCandidate = false;
+      try {
+        confirmedCandidate =
+          !!(await inspect()) && (await readPublic()) === newSha;
+      } catch {
+        // Preserve the publication failure; uncertain rollback checks must not overwrite it.
         throw new Error("PUBLICATION_UNCONFIRMED", { cause: error });
       }
+      if (!confirmedCandidate)
+        throw new Error("PUBLICATION_UNCONFIRMED", { cause: error });
       await replace(restore);
       await verify(oldSha);
       return { status: "ROLLED_BACK", sha256: oldSha } as const;
