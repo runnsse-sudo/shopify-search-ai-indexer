@@ -24,6 +24,23 @@ function markdownLabel(title: string) {
     .replace(/[\\[\]<>]/g, "\\$&");
 }
 
+// Keep the encoded URL in the export; decode only to validate its single handle.
+// Inspect the original spelling too: URL.parse can normalize encoded dot segments.
+export function isPublicProductPath(pathname: string, originalUrl = pathname) {
+  if (/%(?:2e|2f|5c|25)/i.test(originalUrl.split(/[?#]/, 1)[0])) return false;
+  const match = /^\/(?:[a-zA-Z-]+\/)?products\/([^/]+)\/?$/.exec(pathname);
+  if (!match || !/^(?:[a-zA-Z0-9_-]|%[a-fA-F0-9]{2})+$/.test(match[1])) return false;
+  try {
+    const decoded = decodeURIComponent(match[1]);
+    return [...decoded].every(character =>
+      /^[a-zA-Z0-9_-]$/.test(character) ||
+      (character.charCodeAt(0) > 127 && /^[\p{L}\p{M}\p{N}\p{S}]$/u.test(character)),
+    );
+  } catch {
+    return false; // Malformed escapes or invalid UTF-8 are never exported.
+  }
+}
+
 export async function generatePublicLlmCatalog(admin: AdminGraphqlClient, primaryDomain: string, strict = false) {
   const origin = new URL(`https://${primaryDomain}`).origin;
   const products = new Map<string, string>();
@@ -54,7 +71,7 @@ export async function generatePublicLlmCatalog(admin: AdminGraphqlClient, primar
       }
       const url = URL.parse(product.onlineStoreUrl);
       if (!url || url.origin !== origin || url.username || url.password ||
-          !/^\/(?:[a-zA-Z-]+\/)?products\/[a-zA-Z0-9_-]+\/?$/.test(url.pathname)) {
+          !isPublicProductPath(url.pathname, product.onlineStoreUrl)) {
         throw new Error("CATALOG_URL_MISMATCH");
       }
       url.search = "";

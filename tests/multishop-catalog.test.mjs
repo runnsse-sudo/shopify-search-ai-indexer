@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
@@ -22,7 +23,7 @@ const text = (t, handle = "old") =>
   );
 
 function provider(t, options = {}) {
-  let current = text(t);
+  let current = text(t, options.previousHandle ?? "old");
   let version = 1;
   const payloads = new Map();
   const calls = [];
@@ -80,7 +81,7 @@ function provider(t, options = {}) {
                   legacyResourceId: "1",
                   title: "Product",
                   status: "ACTIVE",
-                  onlineStoreUrl: `https://${t.primaryDomain}/products/${options.unchanged ? "old" : "new"}`,
+                  onlineStoreUrl: `https://${t.primaryDomain}/products/${options.handle ?? (options.unchanged ? "old" : "new")}`,
                 },
               ],
               pageInfo: { hasNextPage: false },
@@ -174,7 +175,7 @@ function provider(t, options = {}) {
     state: () => state,
     locked: () => locked,
     run: (clock = () => 100_000_000) =>
-      catalogPublisher(t).refresh(storage, t.shop, admin, transport, clock),
+      catalogPublisher(t, options.onPhase).refresh(storage, t.shop, admin, transport, clock),
   };
 }
 
@@ -525,4 +526,108 @@ test("corrupt or cross-shop durable checkpoint blocks without releasing its lock
     /STATE_UNVERIFIED/,
   );
   assert.equal(removed, false);
+});
+
+// Diagnostics must observe the existing fail-closed path, never create a retry/release.
+for (const scenario of ["count", "generation", "invalid-encoded-handle", "public-readback", "backup", "stage", "update", "checkpoint"]) {
+  test(`diagnostic phase and original stop/lock semantics: ${scenario}`, async () => {
+    let phase;
+    const t = target(1);
+    const f = provider(t, { onPhase: (next) => { phase = next; } });
+    const original = f.admin.graphql;
+    f.admin.graphql = async (operation, args) => {
+      if (scenario === "count" && operation.includes("DailyCatalogCount"))
+        return Response.json({ data: null, errors: [{ message: "private provider data" }] });
+      if (scenario === "generation" && operation.includes("PublicLlmCatalog"))
+        throw new Error("CATALOG_URL_MISMATCH");
+      if (scenario === "invalid-encoded-handle" && operation.includes("PublicLlmCatalog"))
+        return Response.json({data:{products:{nodes:[{legacyResourceId:"1",title:"Synthetic public product",status:"ACTIVE",onlineStoreUrl:`https://${t.primaryDomain}/products/synthetic%C2-product`}],pageInfo:{hasNextPage:false}}}});
+      if (scenario === "stage" && operation.includes("StageRobottoCatalog"))
+        return Response.json({ data: { stagedUploadsCreate: { stagedTargets: [], userErrors: [{ message: "private upload target" }] } } });
+      if (scenario === "update" && operation.includes("ReplaceRobottoCatalog"))
+        return Response.json({ data: { fileUpdate: { files: [], userErrors: [{ message: "private file detail" }] } } });
+      return original(operation, args);
+    };
+    if (scenario === "backup") f.storage.persistBackup = async () => { throw new Error("PERSISTED_BACKUP_MISMATCH"); };
+    if (scenario === "checkpoint") f.storage.saveDailyState = async () => { throw new Error("CATALOG_STATE_UNVERIFIED"); };
+    const transport = scenario === "public-readback"
+      ? async (url) => new Response(new URL(url).hostname === t.primaryDomain ? text(t, "foreign") : text(t))
+      : f.transport;
+    const expected = {
+      count: ["catalog_count", "CATALOG_COUNT_UNVERIFIED"],
+      generation: ["catalog_generate", "CATALOG_URL_MISMATCH"],
+      "invalid-encoded-handle": ["catalog_generate", "CATALOG_URL_MISMATCH"],
+      "public-readback": ["public_verify", "PUBLIC_HASH_NOT_VERIFIED"],
+      backup: ["backup", "PERSISTED_BACKUP_MISMATCH"],
+      stage: ["stage", "STAGING_REJECTED"],
+      update: ["public_verify", "PUBLICATION_UNCONFIRMED"],
+      checkpoint: ["checkpoint_write", "CATALOG_STATE_UNVERIFIED"],
+    }[scenario];
+    await assert.rejects(
+      catalogPublisher(t, (next) => { phase = next; }).refresh(f.storage, t.shop, f.admin, transport, () => 100_000_000),
+      (error) => {
+        assert.equal(error.message, expected[1]);
+        if (scenario === "update") assert.equal(error.cause.message, "FILE_UPDATE_REJECTED");
+        return true;
+      },
+    );
+    assert.equal(phase, expected[0]);
+    assert.equal(f.locked(), true);
+    assert.equal(f.state(), null);
+    assert.equal(f.writes.length, scenario === "checkpoint" ? 1 : 0);
+  });
+}
+
+test("diagnostics cover successful checkpoint and release without extra provider calls", async () => {
+  const phases = [];
+  const f = provider(target(0), { onPhase: (p) => phases.push(p) });
+  assert.equal((await f.run()).status, "PUBLISHED");
+  for (const phase of ["lock", "checkpoint_read", "session", "catalog_count", "catalog_generate", "file_metadata", "public_read", "public_verify", "compare_links", "backup", "stage", "upload", "file_update", "checkpoint_write", "lock_release"])
+    assert.ok(phases.includes(phase), phase);
+  assert.equal(f.locked(), false);
+  assert.equal(f.writes.length, 1);
+  const calls = f.calls.length;
+  phases.length = 0;
+  assert.equal((await f.run()).status, "NOT_DUE");
+  assert.deepEqual(phases, ["lock", "checkpoint_read", "lock_release"]);
+  assert.equal(f.calls.length, calls);
+});
+
+for (const release of [false,true]) {
+  test(`lock ${release ? "release" : "acquisition"} failure preserves diagnostics and never retries`,async()=>{
+    const t=target(0);const f=provider(t);let phase;let attempts=0;
+    const original=f.storage.withLock;
+    f.storage.withLock=async(run)=>{
+      attempts++;
+      if(!release)throw new Error("CATALOG_PUBLICATION_LOCKED");
+      return original(async()=>{await run();throw new Error("CATALOG_LOCK_RELEASE_UNCONFIRMED");});
+    };
+    await assert.rejects(catalogPublisher(t,p=>{phase=p;}).refresh(f.storage,t.shop,f.admin,f.transport,()=>100_000_000),release?/LOCK_RELEASE_UNCONFIRMED/:/PUBLICATION_LOCKED/);
+    assert.equal(phase,release?"lock_release":"lock");assert.equal(attempts,1);assert.equal(f.writes.length,release?1:0);
+    if(release)assert.equal(f.locked(),true);
+    else assert.equal(f.calls.length,0);
+  });
+}
+
+
+for (const handle of ["kos%C2%AE-par-puca%C2%AE-opaque", "dropduo%C2%AE-crystal", "wibeduo%c2%ae-metallic"]) {
+  test(`valid percent-encoded product survives generate, backup, publication and checkpoint: ${handle}`, async () => {
+    const t = target(1);
+    const f = provider(t, { handle });
+    assert.equal((await f.run()).status, "PUBLISHED");
+    assert.ok(f.current().toString().includes(`/products/${handle})`));
+    assert.equal(f.backups.size, 1);
+    assert.equal(f.writes.length, 1);
+    assert.equal(f.state().sha256, sha(f.current()));
+    assert.equal(f.locked(), false);
+    assert.equal((await f.run()).status, "NOT_DUE");
+    assert.equal(f.writes.length, 1);
+  });
+}
+
+test("encoded-path checks preserve previously accepted ASCII backup paths", async () => {
+  const f = provider(target(1), { previousHandle: "old~handle", handle: "new%C2%AE-handle" });
+  assert.equal((await f.run()).status, "PUBLISHED");
+  assert.equal(f.backups.size, 1);
+  assert.equal(f.locked(), false);
 });

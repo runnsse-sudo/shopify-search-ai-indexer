@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import type { CatalogPhase } from "./robotto-catalog-diagnostics.ts";
 import type { AdminGraphqlClient } from "../shopify-product.server";
-import { generatePublicLlmCatalog } from "./llm-catalog.server.ts";
+import { generatePublicLlmCatalog, isPublicProductPath } from "./llm-catalog.server.ts";
 import {
   validateCatalogTarget,
   type CatalogTarget,
@@ -24,7 +25,10 @@ type PublicationInput = {
 };
 
 // A factory binds every read, mutation and verification to one approved store/file.
-export function catalogPublisher(inputTarget: CatalogTarget) {
+export function catalogPublisher(
+  inputTarget: CatalogTarget,
+  onPhase: (phase: CatalogPhase) => void = () => {},
+) {
   const target = validateCatalogTarget(inputTarget);
   const { shop, fileId, primaryDomain, cdnPath } = target;
   const publicUrl =
@@ -51,6 +55,8 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
         !/^\/(?:[a-zA-Z-]+\/)?products\/[a-zA-Z0-9_%~-]+\/?$/.test(
           new URL(match[1]).pathname,
         ) ||
+        ((new URL(match[1]).pathname.includes("%") || match[1].includes("%")) &&
+          !isPublicProductPath(new URL(match[1]).pathname, match[1])) ||
         new URL(match[1]).search ||
         new URL(match[1]).hash ||
         links.has(match[1])
@@ -62,6 +68,7 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
   }
 
   async function readPublicCatalog(transport: typeof fetch, url: string) {
+    onPhase("public_read");
     const response = await transport(url, {
       cache: "no-store",
       redirect: "error",
@@ -89,6 +96,7 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
   }
 
   async function inspectCatalog(admin: AdminGraphqlClient) {
+    onPhase("file_metadata");
     const response = await admin.graphql(readCatalogFile, {
       variables: { id: fileId },
     });
@@ -133,6 +141,7 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
     const canonical = await readPublicCatalog(transport, file.canonical);
     const published = await readPublicCatalog(transport, file.download);
     const current = await inspectCatalog(admin);
+    onPhase("public_verify");
     if (
       sha(canonical) !== sha(published) ||
       current?.canonical !== file.canonical
@@ -151,8 +160,10 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
   ) {
     if (sessionShop !== shop || storage.shop !== shop)
       throw new Error("CATALOG_TENANT_MISMATCH");
+    onPhase("lock");
     return storage.withLock(async () => {
       const started = now();
+      onPhase("checkpoint_read");
       const state = await storage.readDailyState();
       const targetSha256 = sha(Buffer.from(JSON.stringify(target)));
       if (state && state.targetSha256 !== targetSha256)
@@ -164,9 +175,12 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
             Math.floor(state.completedAt / 86_400_000))
       ) {
         if (state.completedAt > started) throw new Error("CATALOG_CLOCK_DRIFT");
+        onPhase("lock_release");
         return { status: "NOT_DUE", sha256: state.sha256 } as const;
       }
+      onPhase("session");
       const client = typeof admin === "function" ? await admin() : admin;
+      onPhase("catalog_count");
       const response = await client.graphql(`#graphql
       query DailyCatalogCount {
         shop { myshopifyDomain primaryDomain { host } }
@@ -184,6 +198,7 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
         total.count <= 0
       )
         throw new Error("CATALOG_COUNT_UNVERIFIED");
+      onPhase("catalog_generate");
       const catalog = await generatePublicLlmCatalog(
         client,
         primaryDomain,
@@ -193,6 +208,7 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
       if (catalog.count !== total.count || candidate.length > limit)
         throw new Error("CATALOG_INCOMPLETE");
       const backup = await readVerifiedCatalog(client, transport);
+      onPhase("compare_links");
       const previous = productLinks(backup);
       const next = productLinks(candidate);
       let outcome;
@@ -202,6 +218,7 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
       ) {
         outcome = { status: "UNCHANGED", sha256: sha(backup) } as const;
       } else {
+        onPhase("backup");
         const stored = await storage.persistBackup(backup, sha(backup));
         outcome = await publish({
           admin: client,
@@ -211,12 +228,15 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
           expectedPreviousSha256: sha(backup),
         });
       }
-      if (outcome.status !== "ROLLED_BACK")
+      if (outcome.status !== "ROLLED_BACK") {
+        onPhase("checkpoint_write");
         await storage.saveDailyState({
           completedAt: now(),
           sha256: outcome.sha256,
           targetSha256,
         });
+      }
+      onPhase("lock_release");
       return outcome;
     });
   }
@@ -263,6 +283,7 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
     }
 
     async function stage(bytes: Uint8Array) {
+      onPhase("stage");
       const data = await query<{
         stagedUploadsCreate: {
           stagedTargets: {
@@ -310,6 +331,7 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
         new Blob([Uint8Array.from(bytes)], { type: "text/plain" }),
         "llms-full.txt",
       );
+      onPhase("upload");
       const response = await transport(upload.href, {
         method: "POST",
         body: form,
@@ -321,6 +343,7 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
     }
 
     async function replace(originalSource: string) {
+      onPhase("file_update");
       const result = await query<{
         fileUpdate: { files: { id: string }[]; userErrors: unknown[] };
       }>(replaceCatalog, { files: [{ id: fileId, originalSource }] });
@@ -355,10 +378,10 @@ export function catalogPublisher(inputTarget: CatalogTarget) {
       await replace(next);
       await verify(newSha);
       return { status: "PUBLISHED", sha256: newSha } as const;
-    } catch {
+    } catch (error: unknown) {
       // A timeout may hide a successful write. Only roll back a confirmed candidate.
       if (!(await inspect()) || (await readPublic()) !== newSha) {
-        throw new Error("PUBLICATION_UNCONFIRMED");
+        throw new Error("PUBLICATION_UNCONFIRMED", { cause: error });
       }
       await replace(restore);
       await verify(oldSha);
