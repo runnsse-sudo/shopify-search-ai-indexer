@@ -44,6 +44,11 @@ const safeCodes = new Set([
   "STAGING_TARGET_MISMATCH",
   "STAGING_UPLOAD_FAILED",
   "FILE_UPDATE_REJECTED",
+  "FILE_CREATE_REJECTED",
+  "CONTENT_ADDRESS_METADATA_MISMATCH",
+  "CATALOG_TEMPLATE_DRIFT",
+  "CATALOG_TEMPLATE_AMBIGUOUS",
+  "INVALID_CATALOG",
   "PUBLIC_HASH_NOT_VERIFIED",
   "PUBLIC_CDN_HASH_MISMATCH",
   "PUBLIC_FILE_VERSION_DRIFT",
@@ -77,6 +82,7 @@ export type CatalogPhase =
   | "stage"
   | "upload"
   | "file_update"
+  | "file_create"
   | "checkpoint_write"
   | "lock_release";
 
@@ -142,7 +148,10 @@ type VerificationEvidence = {
 export class CatalogVerificationError extends Error {
   readonly evidence: VerificationEvidence;
   constructor(
-    code: "PUBLIC_CDN_HASH_MISMATCH" | "PUBLIC_FILE_VERSION_DRIFT",
+    code:
+      | "PUBLIC_CDN_HASH_MISMATCH"
+      | "PUBLIC_FILE_VERSION_DRIFT"
+      | "PUBLIC_HASH_NOT_VERIFIED",
     evidence: VerificationEvidence,
   ) {
     super(code);

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createFelkCatalogCandidate } from "./felk-catalog-candidate.server.ts";
 import {
   CatalogVerificationError,
   type CatalogPhase,
@@ -34,8 +35,18 @@ type PublicationInput = {
 export function catalogPublisher(
   inputTarget: CatalogTarget,
   onPhase: (phase: CatalogPhase) => void = () => {},
+  mode: "existing-file" | "felk-sha-candidate" = "existing-file",
 ) {
   const target = validateCatalogTarget(inputTarget);
+  if (
+    (mode !== "existing-file" && mode !== "felk-sha-candidate") ||
+    (mode === "felk-sha-candidate" &&
+      (target.shop !== "94d715-94.myshopify.com" ||
+        target.primaryDomain !== "www.felkodslasare.se" ||
+        target.fileId !== "gid://shopify/GenericFile/77579264491788" ||
+        target.cdnPath !== "/s/files/1/0746/4979/6876/files/llms-full.txt"))
+  )
+    throw new Error("INVALID_CATALOG_TARGET");
   const { shop, fileId, primaryDomain, cdnPath } = target;
   const publicUrl =
     "https://" + primaryDomain + "/cdn/shop/files/llms-full.txt";
@@ -263,16 +274,30 @@ export function catalogPublisher(
       } else {
         onPhase("backup");
         const stored = await storage.persistBackup(backup, sha(backup));
-        outcome = await publish({
-          admin: client,
-          transport,
-          candidate,
-          backup: stored,
-          expectedPreviousSha256: sha(backup),
-          wait: propagationWait,
-        });
+        if (mode === "felk-sha-candidate") {
+          // persistBackup has already verified the old bytes under this same lock.
+          // A candidate is not a daily publication and must not advance the checkpoint.
+          outcome = await createFelkCatalogCandidate({
+            admin: client,
+            candidate,
+            transport,
+            wait: propagationWait,
+            onPhase,
+          });
+        } else
+          outcome = await publish({
+            admin: client,
+            transport,
+            candidate,
+            backup: stored,
+            expectedPreviousSha256: sha(backup),
+            wait: propagationWait,
+          });
       }
-      if (outcome.status !== "ROLLED_BACK") {
+      if (
+        outcome.status !== "ROLLED_BACK" &&
+        outcome.status !== "CANDIDATE_READY"
+      ) {
         onPhase("checkpoint_write");
         await storage.saveDailyState({
           completedAt: now(),
