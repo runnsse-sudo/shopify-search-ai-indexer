@@ -29,6 +29,7 @@ export async function createFelkCatalogCandidate(input: {
   transport: typeof fetch;
   wait: () => Promise<void>;
   onPhase: (phase: CatalogPhase) => void;
+  expectedLegacyUrl: string;
 }) {
   const bytes = Uint8Array.from(input.candidate);
   const plan = felkCatalogAddress(shop, bytes);
@@ -50,6 +51,11 @@ export async function createFelkCatalogCandidate(input: {
     identity.node?.id !== plan.previousFileId
   )
     throw new Error("SHOP_OR_FILE_MISMATCH");
+  if (
+    identity.node.fileStatus !== "READY" ||
+    identity.node.url !== input.expectedLegacyUrl
+  )
+    throw new Error("PUBLIC_FILE_VERSION_DRIFT");
   if (
     !identity.currentAppInstallation?.accessScopes?.some(
       (s: { handle: string }) => s.handle === "write_files",

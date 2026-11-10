@@ -21,6 +21,17 @@ const oldBytes = Buffer.from(
   `# ${target.primaryDomain}\n\n## Products\n- [Old](https://${target.primaryDomain}/products/old)\n`,
 );
 function fixture(options = {}) {
+  const extraLegacyBytes = Buffer.concat([
+    oldBytes,
+    Buffer.from(
+      `- [Other](https://${target.primaryDomain}/products/old-extra)\n`,
+    ),
+  ]);
+  const legacyCanonical = options.legacyCanonical ?? oldBytes;
+  const legacyDownload =
+    options.legacyDownload ??
+    (options.divergentLegacy ? extraLegacyBytes : oldBytes);
+  const preserved = new Map();
   let locked = false,
     backups = 0,
     stagedBytes,
@@ -28,7 +39,10 @@ function fixture(options = {}) {
     reads = 0,
     waits = 0,
     creates = 0,
-    stateWrites = 0;
+    stateWrites = 0,
+    legacyMetadataReads = 0,
+    legacyCanonicalReads = 0,
+    legacyDownloadReads = 0;
   const calls = [],
     phases = [];
   const id = "gid://shopify/GenericFile/999";
@@ -51,10 +65,21 @@ function fixture(options = {}) {
     async persistBackup(bytes, digest) {
       assert.ok(locked);
       assert.equal(sha(bytes), digest);
-      assert.deepEqual(bytes, oldBytes);
-      if (options.backupFailure) throw new Error("PERSISTED_BACKUP_MISMATCH");
+      assert.ok(
+        [legacyCanonical, legacyDownload].some((value) =>
+          Buffer.from(value).equals(Buffer.from(bytes)),
+        ),
+      );
+      if (
+        options.backupFailure ||
+        (options.secondBackupFailure && backups === 1)
+      )
+        throw new Error("PERSISTED_BACKUP_MISMATCH");
       backups++;
-      return bytes;
+      preserved.set(digest, Buffer.from(bytes));
+      return options.backupReadbackMismatch
+        ? Buffer.from("wrong stored bytes")
+        : Buffer.from(bytes);
     },
   };
   const admin = {
@@ -91,6 +116,12 @@ function fixture(options = {}) {
       if (operation.includes("ReadRobottoCatalog")) {
         const candidate = args.variables.id === id;
         if (candidate) reads++;
+        else legacyMetadataReads++;
+        const legacyVersionChanged =
+          !candidate &&
+          ((options.legacyVersionDrift && legacyMetadataReads >= 2) ||
+            (options.legacyVersionAfterBackup && legacyMetadataReads >= 3) ||
+            (options.legacyVersionBeforeStage && legacyMetadataReads >= 5));
         return Response.json({
           data: {
             shop: {
@@ -101,14 +132,26 @@ function fixture(options = {}) {
             },
             currentAppInstallation: {
               accessScopes: [
-                { handle: options.noScope ? "read_files" : "write_files" },
+                {
+                  handle:
+                    options.noScope ||
+                    (options.legacyScopeLossBeforeStage &&
+                      legacyMetadataReads >= 5)
+                      ? "read_files"
+                      : "write_files",
+                },
               ],
             },
             node: {
               id: candidate ? id : target.fileId,
               fileStatus:
-                candidate && options.processing ? "PROCESSING" : "READY",
-              url: `https://cdn.shopify.com${candidate ? target.cdnPath.replace("llms-full.txt", options.wrongFilename ? "wrong.txt" : filename) : target.cdnPath}?v=${candidate && options.versionDrift && reads > 1 ? 2 : 1}`,
+                (candidate && options.processing) ||
+                (!candidate &&
+                  options.legacyProcessingBeforeStage &&
+                  legacyMetadataReads >= 5)
+                  ? "PROCESSING"
+                  : "READY",
+              url: `https://cdn.shopify.com${candidate ? target.cdnPath.replace("llms-full.txt", options.wrongFilename ? "wrong.txt" : filename) : target.cdnPath}?v=${legacyVersionChanged || (candidate && options.versionDrift && reads > 1) ? 2 : 1}`,
             },
           },
         });
@@ -116,7 +159,7 @@ function fixture(options = {}) {
       if (operation.includes("StageRobottoCatalog")) {
         assert.equal(
           backups,
-          1,
+          new Set([sha(legacyCanonical), sha(legacyDownload)]).size,
           "durable backup precedes every staging request",
         );
         filename = args.variables.input[0].filename;
@@ -175,12 +218,26 @@ function fixture(options = {}) {
     }
     assert.ok(["cdn.shopify.com", target.primaryDomain].includes(url.hostname));
     const candidate = url.pathname.includes("llms-full-");
-    if (!candidate)
+    if (!candidate) {
+      if (url.hostname === "cdn.shopify.com") legacyCanonicalReads++;
+      else legacyDownloadReads++;
+      if (
+        (options.legacyContentDrift &&
+          legacyDownloadReads > 1 &&
+          url.hostname === target.primaryDomain) ||
+        (options.legacyCanonicalDrift &&
+          legacyCanonicalReads > 1 &&
+          url.hostname === "cdn.shopify.com")
+      )
+        return new Response(extraLegacyBytes);
       return new Response(
         options.baselineMismatch && url.hostname === target.primaryDomain
           ? "different old bytes"
-          : oldBytes,
+          : url.hostname === "cdn.shopify.com"
+            ? legacyCanonical
+            : legacyDownload,
       );
+    }
     if (options.oversize)
       return new Response(Buffer.alloc(stagedBytes.length + 1));
     if (
@@ -193,12 +250,9 @@ function fixture(options = {}) {
   return {
     calls,
     phases,
-    run: () =>
-      catalogPublisher(
-        target,
-        (phase) => phases.push(phase),
-        "felk-sha-candidate",
-      ).refresh(
+    preserved,
+    run: (mode = "felk-sha-candidate") =>
+      catalogPublisher(target, (phase) => phases.push(phase), mode).refresh(
         storage,
         target.shop,
         admin,
@@ -232,10 +286,140 @@ test("unchanged product links skip new file and backup", async () => {
   assert.equal(f.info().creates, 0);
   assert.equal(f.info().backups, 0);
 });
+test("stable divergent legacy deliveries are both durably preserved before one candidate", async () => {
+  const f = fixture({ divergentLegacy: true });
+  const result = await f.run();
+  assert.equal(result.status, "CANDIDATE_READY");
+  assert.equal(f.info().backups, 2);
+  assert.equal(f.preserved.size, 2);
+  assert.equal(result.legacy.distinctBackups, 2);
+  assert.equal(result.legacy.divergent, true);
+  assert.equal(result.legacy.provenance, "UNKNOWN_NOT_ADOPTED");
+  assert.equal(result.legacy.existingFileAndLinkUnchanged, true);
+  assert.ok(f.preserved.has(result.legacy.canonical.sha256));
+  assert.ok(f.preserved.has(result.legacy.download.sha256));
+  assert.equal(result.legacy.canonical.sha256, sha(oldBytes));
+  assert.equal(f.info().creates, 1);
+  assert.equal(f.info().stateWrites, 0);
+  assert.equal(f.info().locked, false);
+});
+test("coherent legacy bytes use one backup, with both delivery roles retained", async () => {
+  const f = fixture();
+  const result = await f.run();
+  assert.equal(f.preserved.size, 1);
+  assert.equal(result.legacy.distinctBackups, 1);
+  assert.equal(result.legacy.divergent, false);
+  assert.equal(result.legacy.canonical.sha256, result.legacy.download.sha256);
+});
+test("359/357-link regression preserves both complete legacy byte variants", async () => {
+  const catalog = (count) =>
+    Buffer.from(
+      `# ${target.primaryDomain}\n\n## Products\n` +
+        Array.from(
+          { length: count },
+          (_, i) =>
+            `- [Product ${i}](https://${target.primaryDomain}/products/p-${i})\n`,
+        ).join(""),
+    );
+  const canonical = catalog(359),
+    download = catalog(357);
+  const f = fixture({ legacyCanonical: canonical, legacyDownload: download });
+  const result = await f.run();
+  assert.equal(result.status, "CANDIDATE_READY");
+  assert.ok(f.preserved.get(sha(canonical)).equals(canonical));
+  assert.ok(f.preserved.get(sha(download)).equals(download));
+  assert.equal(result.legacy.distinctBackups, 2);
+  assert.equal(f.info().creates, 1);
+  assert.equal(f.info().stateWrites, 0);
+});
+test("matching one side's product links does not conceal divergent legacy bytes", async () => {
+  const canonical = Buffer.concat([
+    oldBytes,
+    Buffer.from(`- [Extra](https://${target.primaryDomain}/products/extra)\n`),
+  ]);
+  const f = fixture({
+    legacyCanonical: canonical,
+    legacyDownload: oldBytes,
+    unchanged: true,
+  });
+  const result = await f.run();
+  assert.equal(result.status, "CANDIDATE_READY");
+  assert.equal(result.legacy.canonical.sha256, sha(canonical));
+  assert.equal(result.legacy.download.sha256, sha(oldBytes));
+  assert.equal(f.info().backups, 2);
+  assert.equal(f.info().stateWrites, 0);
+});
+test("divergent bytes with identical link sets still require two exact backups", async () => {
+  const download = Buffer.from(
+    oldBytes.toString().replace("[Old]", "[Different title]"),
+  );
+  const f = fixture({ legacyDownload: download, unchanged: true });
+  assert.equal((await f.run()).status, "CANDIDATE_READY");
+  assert.equal(f.info().backups, 2);
+  assert.ok(f.preserved.get(sha(download)).equals(download));
+});
+for (const [option, code] of [
+  ["secondBackupFailure", "PERSISTED_BACKUP_MISMATCH"],
+  ["backupReadbackMismatch", "PERSISTED_BACKUP_MISMATCH"],
+  ["legacyContentDrift", "PUBLIC_BASELINE_DRIFT"],
+  ["legacyCanonicalDrift", "PUBLIC_BASELINE_DRIFT"],
+  ["legacyVersionDrift", "PUBLIC_FILE_VERSION_DRIFT"],
+  ["legacyVersionAfterBackup", "PUBLIC_FILE_VERSION_DRIFT"],
+  ["legacyVersionBeforeStage", "PUBLIC_FILE_VERSION_DRIFT"],
+  ["legacyProcessingBeforeStage", "PUBLIC_FILE_VERSION_DRIFT"],
+  ["legacyScopeLossBeforeStage", "WRITE_FILES_NOT_GRANTED"],
+])
+  test(`${option} stops before staging or creation and retains lock`, async () => {
+    const f = fixture({
+      [option]: true,
+      ...(option === "secondBackupFailure" && { divergentLegacy: true }),
+    });
+    await assert.rejects(f.run(), new RegExp(code));
+    assert.equal(f.info().creates, 0);
+    assert.equal(f.info().stateWrites, 0);
+    assert.equal(f.info().locked, true);
+    assert.equal(
+      f.calls.some((call) => call.includes("StageRobottoCatalog")),
+      false,
+    );
+  });
+test("failure of candidate readback retains both original variants without restore writes", async () => {
+  const f = fixture({ divergentLegacy: true, stale: true });
+  await assert.rejects(f.run(), /PUBLIC_HASH_NOT_VERIFIED/);
+  assert.equal(f.preserved.size, 2);
+  assert.equal(f.info().creates, 1);
+  assert.equal(f.info().locked, true);
+  assert.equal(f.info().stateWrites, 0);
+});
+test("ordinary replacement retains the strict equal-delivery gate", async () => {
+  const f = fixture({ divergentLegacy: true });
+  await assert.rejects(f.run("existing-file"), /PUBLIC_CDN_HASH_MISMATCH/);
+  assert.equal(f.info().backups, 0);
+  assert.equal(f.info().creates, 0);
+  assert.equal(f.info().locked, true);
+});
+for (const legacyDownload of [
+  Buffer.from(
+    `# ${target.primaryDomain}\n\n## Products\n- [Foreign](https://other.example/products/a)\n`,
+  ),
+  Buffer.concat([
+    oldBytes,
+    Buffer.from(
+      `- [Duplicate](https://${target.primaryDomain}/products/old)\n`,
+    ),
+  ]),
+])
+  test("invalid legacy product identity cannot be preserved as a valid snapshot", async () => {
+    const f = fixture({ legacyDownload });
+    await assert.rejects(f.run(), /INVALID_CATALOG_PRODUCT_LINK/);
+    assert.equal(f.info().backups, 0);
+    assert.equal(f.info().creates, 0);
+    assert.equal(f.info().locked, true);
+  });
 for (const [option, code] of [
   ["locked", "CATALOG_PUBLICATION_LOCKED"],
   ["backupFailure", "PERSISTED_BACKUP_MISMATCH"],
-  ["baselineMismatch", "PUBLIC_CDN_HASH_MISMATCH"],
+  ["baselineMismatch", "INVALID_CATALOG_CATALOG"],
   ["noScope", "WRITE_FILES_NOT_GRANTED"],
   ["foreignStage", "STAGING_TARGET_MISMATCH"],
   ["duplicate", "FILE_CREATE_REJECTED"],
