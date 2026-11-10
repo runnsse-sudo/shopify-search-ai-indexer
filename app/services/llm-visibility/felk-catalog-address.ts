@@ -91,3 +91,17 @@ export function verifyFelkCatalogAddress(input: {
     throw new Error("PUBLIC_HASH_NOT_VERIFIED");
   return Object.freeze({ status: "VERIFIED_CANDIDATE", ...plan, ...urls });
 }
+
+/** Build a deployment proposal only from fresh, byte-verified file metadata. */
+export function felkCatalogBinding(
+  input: Parameters<typeof verifyFelkCatalogAddress>[0],
+) {
+  const verified = verifyFelkCatalogAddress(input);
+  return Object.freeze({
+    shop,
+    primaryDomain: domain,
+    fileId: input.before.id,
+    cdnPath: verified.canonicalPath,
+    contentSha256: verified.sha256,
+  });
+}

@@ -30,10 +30,27 @@ export async function createFelkCatalogCandidate(input: {
   wait: () => Promise<void>;
   onPhase: (phase: CatalogPhase) => void;
   expectedLegacyUrl: string;
+  expectedPreviousFileId?: string;
 }) {
   const bytes = Uint8Array.from(input.candidate);
   const plan = felkCatalogAddress(shop, bytes);
   const { admin, transport, wait, onPhase } = input;
+  const previousFileId = input.expectedPreviousFileId ?? plan.previousFileId;
+  if (input.expectedPreviousFileId) {
+    const old = new URL(input.expectedLegacyUrl);
+    if (
+      !/^gid:\/\/shopify\/GenericFile\/[1-9][0-9]*$/.test(previousFileId) ||
+      old.origin !== "https://cdn.shopify.com" ||
+      !/^\/s\/files\/1\/0746\/4979\/6876\/files\/llms-full-[a-f0-9]{64}\.txt$/.test(
+        old.pathname,
+      ) ||
+      !/^\?v=[0-9]+$/.test(old.search) ||
+      old.username ||
+      old.password ||
+      old.hash
+    )
+      throw new Error("CONTENT_ADDRESS_METADATA_MISMATCH");
+  }
   async function query(operation: string, variables: Record<string, unknown>) {
     const response = await admin.graphql(operation, { variables });
     if (!response.ok) throw new Error("SHOPIFY_HTTP_FAILED");
@@ -45,10 +62,10 @@ export async function createFelkCatalogCandidate(input: {
 
   // Recheck tenant/scope immediately before staging. The enclosing publisher
   // separately verifies the previous file and both delivery paths before backup.
-  const identity = await query(readCatalogFile, { id: plan.previousFileId });
+  const identity = await query(readCatalogFile, { id: previousFileId });
   if (
     identity.shop?.myshopifyDomain !== shop ||
-    identity.node?.id !== plan.previousFileId
+    identity.node?.id !== previousFileId
   )
     throw new Error("SHOP_OR_FILE_MISMATCH");
   if (
@@ -128,7 +145,7 @@ export async function createFelkCatalogCandidate(input: {
   if (
     typeof id !== "string" ||
     !/^gid:\/\/shopify\/GenericFile\/[1-9][0-9]*$/.test(id) ||
-    id === plan.previousFileId
+    id === previousFileId
   )
     throw new Error("SHOP_OR_FILE_MISMATCH");
 
@@ -201,7 +218,7 @@ export async function createFelkCatalogCandidate(input: {
           download: verified.download,
           filename: plan.filename,
           linkChangeRequired: true,
-          previousFileId: plan.previousFileId,
+          previousFileId,
         } as const;
       } catch (error: unknown) {
         if (
@@ -253,6 +270,7 @@ export function felkCatalogLinkChange(input: {
   template: string;
   expectedSha256: string;
   previousUrl: string;
+  previousContentSha256?: string;
   candidate: Uint8Array;
   metadata: { shop: string; id: string; status: string; url: string };
 }) {
@@ -261,7 +279,9 @@ export function felkCatalogLinkChange(input: {
   const old = new URL(input.previousUrl);
   if (
     old.origin !== "https://www.felkodslasare.se" ||
-    old.pathname !== "/cdn/shop/files/llms-full.txt" ||
+    !/^\/cdn\/shop\/files\/llms-full(?:-[a-f0-9]{64})?\.txt$/.test(
+      old.pathname,
+    ) ||
     !/^\?v=[0-9]+$/.test(old.search) ||
     old.username ||
     old.password ||
@@ -269,6 +289,11 @@ export function felkCatalogLinkChange(input: {
     old.href !== input.previousUrl
   )
     throw new Error("CATALOG_URL_MISMATCH");
+  const previousDigest = /llms-full-([a-f0-9]{64})\.txt$/.exec(
+    old.pathname,
+  )?.[1];
+  if (previousDigest && input.previousContentSha256 !== previousDigest)
+    throw new Error("CONTENT_ADDRESS_METADATA_MISMATCH");
   const hash = (value: string) =>
     createHash("sha256").update(value, "utf8").digest("hex");
   if (

@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { catalogPublisher } from "../app/services/llm-visibility/multishop-catalog-publication.server.ts";
-import { felkCatalogAddress } from "../app/services/llm-visibility/felk-catalog-address.ts";
+import {
+  felkCatalogBinding,
+  felkCatalogAddress,
+} from "../app/services/llm-visibility/felk-catalog-address.ts";
 import {
   felkCatalogLinkChange,
   restoreFelkCatalogLink,
@@ -20,7 +23,9 @@ const sha = (x) => createHash("sha256").update(x).digest("hex");
 const oldBytes = Buffer.from(
   `# ${target.primaryDomain}\n\n## Products\n- [Old](https://${target.primaryDomain}/products/old)\n`,
 );
+const legacyTarget = target;
 function fixture(options = {}) {
+  const target = options.boundTarget ?? legacyTarget;
   const extraLegacyBytes = Buffer.concat([
     oldBytes,
     Buffer.from(
@@ -151,7 +156,7 @@ function fixture(options = {}) {
                   legacyMetadataReads >= 5)
                   ? "PROCESSING"
                   : "READY",
-              url: `https://cdn.shopify.com${candidate ? target.cdnPath.replace("llms-full.txt", options.wrongFilename ? "wrong.txt" : filename) : target.cdnPath}?v=${legacyVersionChanged || (candidate && options.versionDrift && reads > 1) ? 2 : 1}`,
+              url: `https://cdn.shopify.com${candidate ? target.cdnPath.replace(/llms-full(?:-[a-f0-9]{64})?\.txt$/, options.wrongFilename ? "wrong.txt" : filename) : target.cdnPath}?v=${legacyVersionChanged || (candidate && options.versionDrift && reads > 1) ? 2 : 1}`,
             },
           },
         });
@@ -217,7 +222,9 @@ function fixture(options = {}) {
       return new Response(null, { status: 204 });
     }
     assert.ok(["cdn.shopify.com", target.primaryDomain].includes(url.hostname));
-    const candidate = url.pathname.includes("llms-full-");
+    const candidate =
+      url.pathname.includes("llms-full-") &&
+      !url.pathname.endsWith(target.cdnPath.split("/").at(-1));
     if (!candidate) {
       if (url.hostname === "cdn.shopify.com") legacyCanonicalReads++;
       else legacyDownloadReads++;
@@ -551,4 +558,120 @@ test("new safe failure codes survive diagnostics without provider details", () =
   const result = robottoCatalogFailure(e, "file_create");
   assert.equal(result.code, "FILE_CREATE_REJECTED");
   assert.ok(!JSON.stringify(result).includes("SECRET"));
+});
+
+test("successive SHA-addressed link transition preserves exact rollback", () => {
+  const next = Buffer.from(
+    `# ${target.primaryDomain}\n\n## Products\n- [Next](https://${target.primaryDomain}/products/next)\n`,
+  );
+  const oldDigest = sha(oldBytes),
+    nextPlan = felkCatalogAddress(target.shop, next);
+  const oldUrl = `https://${target.primaryDomain}/cdn/shop/files/llms-full-${oldDigest}.txt?v=123`;
+  const template = `- [Catalog](${oldUrl})\r\n`;
+  const input = {
+    template,
+    expectedSha256: sha(Buffer.from(template)),
+    previousUrl: oldUrl,
+    previousContentSha256: oldDigest,
+    candidate: next,
+    metadata: {
+      shop: target.shop,
+      id: "gid://shopify/GenericFile/12345",
+      status: "READY",
+      url: `https://cdn.shopify.com${nextPlan.canonicalPath}?v=124`,
+    },
+  };
+  const patch = felkCatalogLinkChange(input);
+  assert.equal(patch.requiresSeparateThemeAuthorization, true);
+  assert.equal(restoreFelkCatalogLink(patch.after, patch), template);
+  assert.throws(
+    () => restoreFelkCatalogLink(patch.after + "drift", patch),
+    /CATALOG_TEMPLATE_DRIFT/,
+  );
+  assert.throws(
+    () =>
+      felkCatalogLinkChange({
+        ...input,
+        previousContentSha256: "a".repeat(64),
+      }),
+    /CONTENT_ADDRESS_METADATA_MISMATCH/,
+  );
+});
+
+test("deployment binding comes from both byte-verified paths and stable tenant metadata", () => {
+  const plan = felkCatalogAddress(target.shop, oldBytes),
+    before = {
+      shop: target.shop,
+      id: "gid://shopify/GenericFile/12345",
+      status: "READY",
+      url: `https://cdn.shopify.com${plan.canonicalPath}?v=99`,
+    };
+  const input = {
+    candidate: oldBytes,
+    sessionShop: target.shop,
+    before,
+    after: before,
+    canonical: oldBytes,
+    download: oldBytes,
+  };
+  const binding = felkCatalogBinding(input);
+  assert.equal(binding.contentSha256, plan.sha256);
+  assert.equal(binding.fileId, before.id);
+  assert.equal(binding.cdnPath, plan.canonicalPath);
+  assert.throws(
+    () => felkCatalogBinding({ ...input, download: Buffer.from("bad") }),
+    /PUBLIC_HASH_NOT_VERIFIED/,
+  );
+  assert.throws(
+    () =>
+      felkCatalogBinding({ ...input, sessionShop: "dxf00a-wf.myshopify.com" }),
+    /CATALOG_TENANT_MISMATCH/,
+  );
+  assert.throws(
+    () =>
+      felkCatalogBinding({
+        ...input,
+        after: { ...before, url: before.url.replace("99", "100") },
+      }),
+    /PUBLIC_FILE_VERSION_DRIFT/,
+  );
+});
+
+function boundCandidateTarget() {
+  const digest = sha(oldBytes);
+  return {
+    ...legacyTarget,
+    fileId: "gid://shopify/GenericFile/12345",
+    cdnPath: `/s/files/1/0746/4979/6876/files/llms-full-${digest}.txt`,
+    contentSha256: digest,
+  };
+}
+test("explicit approved candidate flow supports a verified current SHA file and keeps it unchanged", async () => {
+  const t = boundCandidateTarget(),
+    f = fixture({ boundTarget: t }),
+    r = await f.run();
+  assert.equal(r.status, "CANDIDATE_READY");
+  assert.equal(r.previousFileId, t.fileId);
+  assert.equal(r.legacy.fileId, t.fileId);
+  assert.equal(r.legacy.existingFileAndLinkUnchanged, true);
+  assert.equal(f.info().creates, 1);
+  assert.equal(f.info().stateWrites, 0);
+  assert.equal(f.info().backups, 1);
+});
+test("explicit SHA candidate blocks backup failure before new generation creation", async () => {
+  const f = fixture({
+    boundTarget: boundCandidateTarget(),
+    backupFailure: true,
+  });
+  await assert.rejects(f.run(), /PERSISTED_BACKUP_MISMATCH/);
+  assert.equal(f.info().creates, 0);
+  assert.equal(f.info().stateWrites, 0);
+});
+test("explicit SHA candidate rechecks current identity/version before staging", async () => {
+  const f = fixture({
+    boundTarget: boundCandidateTarget(),
+    legacyVersionBeforeStage: true,
+  });
+  await assert.rejects(f.run(), /PUBLIC_FILE_VERSION_DRIFT/);
+  assert.equal(f.info().creates, 0);
 });

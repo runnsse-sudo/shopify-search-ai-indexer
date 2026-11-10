@@ -12,11 +12,22 @@ export type CatalogTarget = {
   primaryDomain: string;
   fileId: string;
   cdnPath: string;
+  // Only Felk may opt into immutable, verified content-addressed delivery.
+  contentSha256?: string;
 };
 
 export function validateCatalogTarget(
   value: CatalogTarget,
 ): Readonly<CatalogTarget> {
+  const addressed = value?.contentSha256 !== undefined;
+  const validAddress =
+    addressed &&
+    value.shop === "94d715-94.myshopify.com" &&
+    value.primaryDomain === "www.felkodslasare.se" &&
+    /^[a-f0-9]{64}$/.test(value.contentSha256!) &&
+    value.fileId !== "gid://shopify/GenericFile/77579264491788" &&
+    value.cdnPath ===
+      `/s/files/1/0746/4979/6876/files/llms-full-${value.contentSha256}.txt`;
   if (
     !value ||
     !CATALOG_SHOPS.some((shop) => shop === value.shop) ||
@@ -25,7 +36,11 @@ export function validateCatalogTarget(
       value.primaryDomain,
     ) ||
     !/^gid:\/\/shopify\/GenericFile\/[1-9]\d*$/.test(value.fileId) ||
-    !/^\/s\/files\/1\/(?:\d{4}\/){2,3}files\/llms-full\.txt$/.test(value.cdnPath)
+    (addressed
+      ? !validAddress
+      : !/^\/s\/files\/1\/(?:\d{4}\/){2,3}files\/llms-full\.txt$/.test(
+          value.cdnPath,
+        ))
   ) {
     throw new Error("INVALID_CATALOG_TARGET");
   }
@@ -34,6 +49,7 @@ export function validateCatalogTarget(
     primaryDomain: value.primaryDomain,
     fileId: value.fileId,
     cdnPath: value.cdnPath,
+    ...(addressed && { contentSha256: value.contentSha256! }),
   });
 }
 
