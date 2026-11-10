@@ -40,3 +40,10 @@ redirect_urls = [
 
 [build]
 automatically_update_urls_on_dev = false
+
+# Local definition only; installation and Felk template adoption need separate approval.
+[shop.metafields.app.felk_catalog_pointer]
+name = "Felk verified AI catalog pointer"
+type = "json"
+access.admin = "merchant_read"
+access.storefront = "public_read"

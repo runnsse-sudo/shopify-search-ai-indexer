@@ -80,3 +80,31 @@ export function catalogPrefix(shop: string) {
     ? "robotto/llms-full/"
     : `shops/${shop}/llms-full/`;
 }
+
+export type FelkHandoverConfig = {
+  enabled: true;
+  shop: string;
+  ownerId: string;
+  namespace: string;
+};
+export function parseFelkHandoverConfig(
+  json?: string,
+): FelkHandoverConfig | null {
+  if (json === undefined) return null;
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    throw new Error("CATALOG_HANDOVER_NOT_ENABLED");
+  }
+  if (
+    !value ||
+    Object.keys(value).sort().join() !== "enabled,namespace,ownerId,shop" ||
+    value.enabled !== true ||
+    value.shop !== "94d715-94.myshopify.com" ||
+    !/^gid:\/\/shopify\/Shop\/[1-9]\d*$/.test(value.ownerId) ||
+    !/^app--[1-9]\d*$/.test(value.namespace)
+  )
+    throw new Error("CATALOG_HANDOVER_NOT_ENABLED");
+  return Object.freeze({ ...value });
+}
