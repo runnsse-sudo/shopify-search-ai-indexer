@@ -149,7 +149,7 @@ export function catalogPublisher(
     return { canonical: url.href, download: publicUrl + url.search };
   }
 
-  async function readVerifiedCatalog(
+  async function readCatalogSnapshot(
     admin: AdminGraphqlClient,
     transport: typeof fetch,
     expectedVersion?: string,
@@ -178,9 +178,25 @@ export function catalogPublisher(
         evidence.beforeVersion !== expectedVersion)
     )
       throw new CatalogVerificationError("PUBLIC_FILE_VERSION_DRIFT", evidence);
-    if (evidence.canonicalSha256 !== evidence.downloadSha256)
-      throw new CatalogVerificationError("PUBLIC_CDN_HASH_MISMATCH", evidence);
-    return published;
+    return { canonical, published, evidence, urls: file };
+  }
+
+  async function readVerifiedCatalog(
+    admin: AdminGraphqlClient,
+    transport: typeof fetch,
+    expectedVersion?: string,
+  ) {
+    const snapshot = await readCatalogSnapshot(
+      admin,
+      transport,
+      expectedVersion,
+    );
+    if (snapshot.evidence.canonicalSha256 !== snapshot.evidence.downloadSha256)
+      throw new CatalogVerificationError(
+        "PUBLIC_CDN_HASH_MISMATCH",
+        snapshot.evidence,
+      );
+    return snapshot.published;
   }
 
   async function refresh(
@@ -241,50 +257,111 @@ export function catalogPublisher(
       const candidate = Buffer.from(catalog.text);
       if (catalog.count !== total.count || candidate.length > limit)
         throw new Error("CATALOG_INCOMPLETE");
-      let backup!: Uint8Array;
-      let baselineVersion: string | undefined;
-      for (let attempt = 0; attempt < 6; attempt++) {
-        try {
-          backup = await readVerifiedCatalog(
+      let outcome;
+      if (mode === "felk-sha-candidate") {
+        // A separate candidate never replaces either legacy file or its discovery link.
+        // Preserve both observed variants; do not promote either to a trusted baseline.
+        const legacy = await readCatalogSnapshot(client, transport);
+        onPhase("compare_links");
+        const canonicalLinks = productLinks(legacy.canonical);
+        productLinks(legacy.published);
+        const nextLinks = productLinks(candidate);
+        const divergent =
+          legacy.evidence.canonicalSha256 !== legacy.evidence.downloadSha256;
+        if (
+          !divergent &&
+          canonicalLinks.size === nextLinks.size &&
+          [...nextLinks].every((link) => canonicalLinks.has(link))
+        ) {
+          outcome = {
+            status: "UNCHANGED",
+            sha256: legacy.evidence.canonicalSha256,
+          } as const;
+        } else {
+          onPhase("backup");
+          const preserved = new Set<string>();
+          for (const bytes of [legacy.canonical, legacy.published]) {
+            const digest = sha(bytes);
+            if (preserved.has(digest)) continue;
+            const stored = await storage.persistBackup(bytes, digest);
+            if (stored.length !== bytes.length || sha(stored) !== digest)
+              throw new Error("PERSISTED_BACKUP_MISMATCH");
+            preserved.add(digest);
+          }
+          // Re-prove each side after durable readback. Same-version byte drift is
+          // still drift, even if cache propagation happens to make the two agree.
+          const fresh = await readCatalogSnapshot(
             client,
             transport,
-            baselineVersion,
+            legacy.evidence.beforeVersion,
           );
-          break;
-        } catch (error: unknown) {
           if (
-            !(error instanceof CatalogVerificationError) ||
-            error.message !== "PUBLIC_CDN_HASH_MISMATCH" ||
-            attempt === 5
+            fresh.evidence.canonicalSha256 !==
+              legacy.evidence.canonicalSha256 ||
+            fresh.evidence.downloadSha256 !== legacy.evidence.downloadSha256
           )
-            throw error;
-          baselineVersion = error.evidence.beforeVersion;
-          await propagationWait();
+            throw new Error("PUBLIC_BASELINE_DRIFT");
+          outcome = {
+            ...(await createFelkCatalogCandidate({
+              admin: client,
+              candidate,
+              transport,
+              wait: propagationWait,
+              onPhase,
+              expectedLegacyUrl: legacy.urls.canonical,
+            })),
+            legacy: {
+              fileId,
+              version: legacy.evidence.beforeVersion,
+              observedAt: legacy.evidence.observedAt,
+              canonical: {
+                sha256: legacy.evidence.canonicalSha256,
+                bytes: legacy.canonical.length,
+              },
+              download: {
+                sha256: legacy.evidence.downloadSha256,
+                bytes: legacy.published.length,
+              },
+              distinctBackups: preserved.size,
+              divergent,
+              provenance: "UNKNOWN_NOT_ADOPTED",
+              existingFileAndLinkUnchanged: true,
+            },
+          } as const;
         }
-      }
-      onPhase("compare_links");
-      const previous = productLinks(backup);
-      const next = productLinks(candidate);
-      let outcome;
-      if (
-        previous.size === next.size &&
-        [...next].every((link) => previous.has(link))
-      ) {
-        outcome = { status: "UNCHANGED", sha256: sha(backup) } as const;
       } else {
-        onPhase("backup");
-        const stored = await storage.persistBackup(backup, sha(backup));
-        if (mode === "felk-sha-candidate") {
-          // persistBackup has already verified the old bytes under this same lock.
-          // A candidate is not a daily publication and must not advance the checkpoint.
-          outcome = await createFelkCatalogCandidate({
-            admin: client,
-            candidate,
-            transport,
-            wait: propagationWait,
-            onPhase,
-          });
-        } else
+        let backup!: Uint8Array;
+        let baselineVersion: string | undefined;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          try {
+            backup = await readVerifiedCatalog(
+              client,
+              transport,
+              baselineVersion,
+            );
+            break;
+          } catch (error: unknown) {
+            if (
+              !(error instanceof CatalogVerificationError) ||
+              error.message !== "PUBLIC_CDN_HASH_MISMATCH" ||
+              attempt === 5
+            )
+              throw error;
+            baselineVersion = error.evidence.beforeVersion;
+            await propagationWait();
+          }
+        }
+        onPhase("compare_links");
+        const previous = productLinks(backup);
+        const next = productLinks(candidate);
+        if (
+          previous.size === next.size &&
+          [...next].every((link) => previous.has(link))
+        ) {
+          outcome = { status: "UNCHANGED", sha256: sha(backup) } as const;
+        } else {
+          onPhase("backup");
+          const stored = await storage.persistBackup(backup, sha(backup));
           outcome = await publish({
             admin: client,
             transport,
@@ -293,6 +370,7 @@ export function catalogPublisher(
             expectedPreviousSha256: sha(backup),
             wait: propagationWait,
           });
+        }
       }
       if (
         outcome.status !== "ROLLED_BACK" &&
