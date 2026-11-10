@@ -32,13 +32,14 @@ function provider(t, options = {}) {
   const payloads = new Map();
   const calls = [];
   const writes = [];
-  let state = null;
+  let state = options.initialState ?? null;
   let locked = false;
   const backups = new Map();
   const storage = {
     shop: t.shop,
     async withLock(run) {
-      if (locked) throw new Error("CATALOG_PUBLICATION_LOCKED");
+      if (locked || options.locked)
+        throw new Error("CATALOG_PUBLICATION_LOCKED");
       locked = true;
       const result = await run();
       locked = false;
@@ -55,8 +56,11 @@ function provider(t, options = {}) {
     async persistBackup(bytes, digest) {
       assert.ok(locked);
       assert.equal(sha(bytes), digest);
+      if (options.backupFailure) throw new Error("PERSISTED_BACKUP_MISMATCH");
       backups.set(digest, Buffer.from(bytes));
-      return Buffer.from(bytes);
+      return options.backupReadbackMismatch
+        ? Buffer.from("bad stored bytes")
+        : Buffer.from(bytes);
     },
   };
   const admin = {
@@ -166,7 +170,14 @@ function provider(t, options = {}) {
       return new Response(null, { status: 204 });
     }
     assert.ok(["cdn.shopify.com", t.primaryDomain].includes(url.hostname));
+    if (url.pathname === "/llms-full.txt")
+      return new Response(
+        options.discovery ??
+          `- [Catalog](https://${t.primaryDomain}/cdn/shop/files/${t.cdnPath.split("/").at(-1)}?v=1)\n`,
+      );
     assert.match(url.search, /^\?v=\d+$/);
+    if (options.shaAfterBackupDrift && backups.size)
+      return new Response(text(t, "changed-after-backup"));
     if (url.hostname === t.primaryDomain) {
       ownReads++;
       if (writes.length) postWriteOwnReads++;
@@ -836,3 +847,147 @@ test("version changes between CDN retries stop without accepting new baseline", 
   assert.equal(f.backups.size, 0);
   assert.equal(f.locked(), true);
 });
+
+function addressedTarget() {
+  const t = {
+    shop: "94d715-94.myshopify.com",
+    primaryDomain: "www.felkodslasare.se",
+    fileId: "gid://shopify/GenericFile/77590315368716",
+  };
+  const digest = sha(text(t));
+  return {
+    ...t,
+    cdnPath: `/s/files/1/0746/4979/6876/files/llms-full-${digest}.txt`,
+    contentSha256: digest,
+  };
+}
+test("SHA-bound Felk target is explicit and legacy target serialization stays unchanged", () => {
+  const t = addressedTarget();
+  assert.deepEqual(validateCatalogTarget(t), t);
+  for (let i = 0; i < 6; i++)
+    assert.deepEqual(validateCatalogTarget(target(i)), target(i));
+  for (const bad of [
+    { ...t, shop: CATALOG_SHOPS[0] },
+    { ...t, primaryDomain: "foreign.example" },
+    { ...t, contentSha256: "a".repeat(64) },
+    { ...t, contentSha256: null },
+    { ...t, fileId: "gid://shopify/GenericFile/77579264491788" },
+    { ...t, contentSha256: undefined },
+    { ...t, cdnPath: t.cdnPath + "?v=1" },
+  ])
+    assert.throws(() => validateCatalogTarget(bad), /INVALID_CATALOG_TARGET/);
+});
+test("unchanged SHA-bound daily catalogue only checkpoints verified current generation", async () => {
+  const t = addressedTarget(),
+    f = provider(t, { unchanged: true });
+  const result = await f.run();
+  assert.equal(result.status, "UNCHANGED");
+  assert.equal(result.sha256, t.contentSha256);
+  assert.equal(f.state().targetSha256, sha(Buffer.from(JSON.stringify(t))));
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.payloads.size, 0);
+  assert.equal(f.backups.size, 0);
+  assert.equal(f.locked(), false);
+  assert.equal((await f.run()).status, "NOT_DUE");
+  assert.equal((await f.run(() => 2 * 86400000)).status, "UNCHANGED");
+});
+test("changed SHA-bound daily catalogue prepares handover, backs up current bytes and never publishes", async () => {
+  const t = addressedTarget(),
+    f = provider(t);
+  const result = await f.run();
+  assert.equal(result.status, "LINK_UPDATE_REQUIRED");
+  assert.equal(result.currentFileId, t.fileId);
+  assert.notEqual(result.nextSha256, t.contentSha256);
+  assert.equal(result.nextFilename, `llms-full-${result.nextSha256}.txt`);
+  assert.equal(result.requiresSeparateCandidateAndLinkApproval, true);
+  assert.equal(f.state(), null);
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.payloads.size, 0);
+  assert.equal(f.backups.size, 1);
+  assert.equal(f.locked(), false);
+});
+for (const [name, options, code] of [
+  ["missing scope", { missingScope: true }, "WRITE_FILES_NOT_GRANTED"],
+  [
+    "foreign shop",
+    { foreignShop: CATALOG_SHOPS[0] },
+    "CATALOG_COUNT_UNVERIFIED",
+  ],
+  [
+    "metadata version drift",
+    { metadataDrift: true },
+    "PUBLIC_FILE_VERSION_DRIFT",
+  ],
+  ["CDN mismatch", { initialMismatchReads: 1 }, "PUBLIC_HASH_NOT_VERIFIED"],
+  [
+    "wrong filename",
+    { wrongCdn: "/s/files/1/0746/4979/6876/files/llms-full.txt" },
+    "SHOPIFY_FILE_URL_MISMATCH",
+  ],
+  [
+    "stale discovery",
+    {
+      discovery:
+        "- [Catalog](https://www.felkodslasare.se/cdn/shop/files/llms-full.txt?v=1)",
+    },
+    "CATALOG_DISCOVERY_DRIFT",
+  ],
+  ["missing discovery", { discovery: "# no link" }, "CATALOG_DISCOVERY_DRIFT"],
+  [
+    "ambiguous discovery",
+    {
+      discovery:
+        "- [One](https://www.felkodslasare.se/llms-full.txt)\n- [Two](https://www.felkodslasare.se/llms-full.txt)",
+    },
+    "CATALOG_DISCOVERY_DRIFT",
+  ],
+  ["backup failure", { backupFailure: true }, "PERSISTED_BACKUP_MISMATCH"],
+  ["incomplete catalogue", { incomplete: true }, "CATALOG_INCOMPLETE"],
+])
+  test(`SHA daily blocks ${name} before any staging/mutation/checkpoint`, async () => {
+    const f = provider(addressedTarget(), options);
+    await assert.rejects(f.run(), new RegExp(code));
+    assert.equal(f.writes.length, 0);
+    assert.equal(f.payloads.size, 0);
+    assert.equal(f.state(), null);
+    assert.equal(f.locked(), true, "preserve uncertain lock");
+  });
+test("SHA-bound file cannot be repurposed by target hash drift", async () => {
+  const f = provider(addressedTarget(), {
+    previousHandle: "other",
+    unchanged: true,
+  });
+  await assert.rejects(f.run(), /PUBLIC_HASH_NOT_VERIFIED/);
+  assert.equal(f.writes.length, 0);
+});
+
+for (const [name, options, code] of [
+  ["concurrent lock", { locked: true }, "CATALOG_PUBLICATION_LOCKED"],
+  [
+    "wrong stored backup",
+    { backupReadbackMismatch: true },
+    "PERSISTED_BACKUP_MISMATCH",
+  ],
+  [
+    "bytes drift after backup",
+    { shaAfterBackupDrift: true },
+    "PUBLIC_HASH_NOT_VERIFIED",
+  ],
+  [
+    "old target checkpoint",
+    {
+      initialState: {
+        completedAt: 0,
+        sha256: "a".repeat(64),
+        targetSha256: "b".repeat(64),
+      },
+    },
+    "CATALOG_STATE_TARGET_DRIFT",
+  ],
+])
+  test(`SHA daily blocks ${name} without mutation`, async () => {
+    const f = provider(addressedTarget(), options);
+    await assert.rejects(f.run(), new RegExp(code));
+    assert.equal(f.writes.length, 0);
+    assert.equal(f.payloads.size, 0);
+  });

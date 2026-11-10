@@ -51,7 +51,11 @@ async function main() {
           },
         );
         console.log(JSON.stringify({ shop: target.shop, ...result }));
-        if (result.status === "ROLLED_BACK") failed = true;
+        if (
+          result.status === "ROLLED_BACK" ||
+          result.status === "LINK_UPDATE_REQUIRED"
+        )
+          failed = true;
       } catch (error: unknown) {
         // Exact allowlisted codes only; never provider messages or error properties.
         const failure = robottoCatalogFailure(error, phase);

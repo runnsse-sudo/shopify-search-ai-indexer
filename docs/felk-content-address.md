@@ -1,4 +1,4 @@
-# Felkodsläsare: content-addressed catalog candidate
+# FelkodslÃ¤sare: content-addressed catalog candidate
 
 Local implementation based on main 7ac0af91f7de8917cf85eb38af00c52dc3f2d138.
 No deployment, real file creation, link change, cleanup or activation was performed.
@@ -23,7 +23,7 @@ These pure functions have no network or storage side effects.
 The existing publisher now has an explicit `felk-sha-candidate` mode, exposed
 by the worker's separate `--publish-felk-candidate-once` command. The deployed
 job and normal `--run-enabled-catalogs-once` command have not been changed.
-The candidate command filters configured targets to Felkodsläsare and enforces
+The candidate command filters configured targets to FelkodslÃ¤sare and enforces
 its exact existing shop, domain, GenericFile ID and CDN directory before I/O.
 It shares the existing daily interval, identity, complete-catalog generation,
 strict legacy metadata identity, catalogue validation and durable backup gates.
@@ -119,7 +119,39 @@ were changed. Existing schema-validation evidence applies to unchanged operation
 PostgreSQL and real provider verification are not run by this local package.
 
 API contract references (2026-10):
+
 - https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/FileCreateInput
 - https://shopify.dev/docs/api/admin-graphql/2026-10/enums/FileCreateInputDuplicateResolutionMode
 - https://shopify.dev/docs/api/admin-graphql/2026-10/mutations/fileCreate
 - https://shopify.dev/docs/api/admin-graphql/2026-10/mutations/themeFilesUpsert
+
+## Daily checks of an adopted SHA-bound file
+
+A separately verified target may include `contentSha256` together with the exact
+GenericFile ID and SHA filename. `felkCatalogBinding` prepares this target only
+from stable tenant/READY metadata and matching bytes on both delivery paths.
+This is a deployment proposal, not live adoption. Legacy target serialization,
+locks, backup prefixes and the other five stores remain unchanged.
+
+Daily mode checks the published `/llms-full.txt` discovery link against the exact
+bound URL, metadata/version and content hash. Unchanged product links return
+UNCHANGED and save the existing UTC-day checkpoint. New links persist and verify
+the current backup, re-prove the baseline, then return LINK_UPDATE_REQUIRED with
+the next SHA filename. No staging, upload, fileUpdate, fileCreate or checkpoint
+advance occurs in this branch. The worker reports a failed/incomplete task rather
+than silently marking a blocked handover successful. Successful blocked-handover
+preparation releases its own lock; uncertain errors preserve it for review.
+
+A separately approved explicit candidate run may use the adopted SHA target as
+its previous file binding. It creates only an immutable new generation. The pure
+link-change helper supports successive SHA links, requires the prior content hash
+and template hash, and generates an exact rollback that rejects later edits.
+There is no theme writer or automatic MAIN-theme handover in this package.
+
+An existing checkpoint for the legacy target MUST NOT be silently reset: a target
+hash mismatch still blocks. Before production adoption, inspect the exact existing
+checkpoint and prepare a separately reviewed state transition or use a qualified
+handover process. Neither editing worker configuration nor possessing a file URL
+is sufficient authority to overwrite a SHA file or update discovery. Daily
+end-to-end automatic publication remains blocked until that supported handover
+path and explicit live authorization exist. No schedule is activated here.

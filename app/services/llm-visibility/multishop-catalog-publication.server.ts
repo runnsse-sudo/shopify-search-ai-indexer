@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { felkCatalogAddress } from "./felk-catalog-address.ts";
 import { createFelkCatalogCandidate } from "./felk-catalog-candidate.server.ts";
 import {
   CatalogVerificationError,
@@ -41,6 +42,7 @@ export function catalogPublisher(
   if (
     (mode !== "existing-file" && mode !== "felk-sha-candidate") ||
     (mode === "felk-sha-candidate" &&
+      !target.contentSha256 &&
       (target.shop !== "94d715-94.myshopify.com" ||
         target.primaryDomain !== "www.felkodslasare.se" ||
         target.fileId !== "gid://shopify/GenericFile/77579264491788" ||
@@ -49,7 +51,7 @@ export function catalogPublisher(
     throw new Error("INVALID_CATALOG_TARGET");
   const { shop, fileId, primaryDomain, cdnPath } = target;
   const publicUrl =
-    "https://" + primaryDomain + "/cdn/shop/files/llms-full.txt";
+    "https://" + primaryDomain + "/cdn/shop/files/" + cdnPath.split("/").at(-1);
   function productLinks(bytes: Uint8Array) {
     const lines = new TextDecoder("utf-8", { fatal: true })
       .decode(bytes)
@@ -178,6 +180,12 @@ export function catalogPublisher(
         evidence.beforeVersion !== expectedVersion)
     )
       throw new CatalogVerificationError("PUBLIC_FILE_VERSION_DRIFT", evidence);
+    if (
+      target.contentSha256 &&
+      (evidence.canonicalSha256 !== target.contentSha256 ||
+        evidence.downloadSha256 !== target.contentSha256)
+    )
+      throw new CatalogVerificationError("PUBLIC_HASH_NOT_VERIFIED", evidence);
     return { canonical, published, evidence, urls: file };
   }
 
@@ -258,7 +266,64 @@ export function catalogPublisher(
       if (catalog.count !== total.count || candidate.length > limit)
         throw new Error("CATALOG_INCOMPLETE");
       let outcome;
-      if (mode === "felk-sha-candidate") {
+      if (target.contentSha256 && mode === "existing-file") {
+        const current = await readCatalogSnapshot(client, transport);
+        // A verified file is not sufficient: the public discovery page must still
+        // link to this exact bound generation. Never write a MAIN theme here.
+        const wrapper = new TextDecoder("utf-8", { fatal: true }).decode(
+          await readPublicCatalog(
+            transport,
+            `https://${primaryDomain}/llms-full.txt`,
+          ),
+        );
+        const links = [...wrapper.matchAll(/\]\((https:\/\/[^\s)]+)\)/g)]
+          .map((match) => match[1])
+          .filter((url) => /llms-full/.test(new URL(url).pathname));
+        if (
+          links.length !== 1 ||
+          ![current.urls.download, current.urls.canonical].includes(links[0])
+        )
+          throw new Error("CATALOG_DISCOVERY_DRIFT");
+        const previous = productLinks(current.published);
+        const next = productLinks(candidate);
+        if (
+          previous.size === next.size &&
+          [...next].every((link) => previous.has(link))
+        ) {
+          outcome = {
+            status: "UNCHANGED",
+            sha256: target.contentSha256,
+          } as const;
+        } else {
+          onPhase("backup");
+          const stored = await storage.persistBackup(
+            current.published,
+            target.contentSha256,
+          );
+          if (
+            stored.length !== current.published.length ||
+            sha(stored) !== target.contentSha256
+          )
+            throw new Error("PERSISTED_BACKUP_MISMATCH");
+          await readCatalogSnapshot(
+            client,
+            transport,
+            current.evidence.beforeVersion,
+          );
+          const planned = felkCatalogAddress(shop, candidate);
+          // No qualified automatic discovery handover is configured. Stop BEFORE
+          // staging or file creation; this status is not a completed daily update.
+          outcome = {
+            status: "LINK_UPDATE_REQUIRED",
+            sha256: target.contentSha256,
+            nextSha256: planned.sha256,
+            nextFilename: planned.filename,
+            currentFileId: fileId,
+            currentUrl: current.urls.download,
+            requiresSeparateCandidateAndLinkApproval: true,
+          } as const;
+        }
+      } else if (mode === "felk-sha-candidate") {
         // A separate candidate never replaces either legacy file or its discovery link.
         // Preserve both observed variants; do not promote either to a trusted baseline.
         const legacy = await readCatalogSnapshot(client, transport);
@@ -309,6 +374,7 @@ export function catalogPublisher(
               wait: propagationWait,
               onPhase,
               expectedLegacyUrl: legacy.urls.canonical,
+              ...(target.contentSha256 && { expectedPreviousFileId: fileId }),
             })),
             legacy: {
               fileId,
@@ -374,7 +440,8 @@ export function catalogPublisher(
       }
       if (
         outcome.status !== "ROLLED_BACK" &&
-        outcome.status !== "CANDIDATE_READY"
+        outcome.status !== "CANDIDATE_READY" &&
+        outcome.status !== "LINK_UPDATE_REQUIRED"
       ) {
         onPhase("checkpoint_write");
         await storage.saveDailyState({
@@ -388,6 +455,8 @@ export function catalogPublisher(
     });
   }
   async function publish(input: PublicationInput) {
+    if (target.contentSha256)
+      throw new Error("CONTENT_ADDRESSED_OVERWRITE_FORBIDDEN");
     const { admin } = input;
     const candidate = Uint8Array.from(input.candidate);
     const backup = Uint8Array.from(input.backup);
