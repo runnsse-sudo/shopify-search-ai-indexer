@@ -37,6 +37,12 @@ export function catalogPublisher(
   inputTarget: CatalogTarget,
   onPhase: (phase: CatalogPhase) => void = () => {},
   mode: "existing-file" | "felk-sha-candidate" = "existing-file",
+  handover?: (input: {
+    candidate: Uint8Array;
+    previous: CatalogTarget;
+    previousUrl: string;
+    storage: CatalogStorage;
+  }) => Promise<CatalogTarget>,
 ) {
   const target = validateCatalogTarget(inputTarget);
   if (
@@ -49,6 +55,13 @@ export function catalogPublisher(
         target.cdnPath !== "/s/files/1/0746/4979/6876/files/llms-full.txt"))
   )
     throw new Error("INVALID_CATALOG_TARGET");
+  if (
+    handover &&
+    (target.shop !== "94d715-94.myshopify.com" ||
+      !target.contentSha256 ||
+      mode !== "existing-file")
+  )
+    throw new Error("CATALOG_HANDOVER_NOT_ENABLED");
   const { shop, fileId, primaryDomain, cdnPath } = target;
   const publicUrl =
     "https://" + primaryDomain + "/cdn/shop/files/" + cdnPath.split("/").at(-1);
@@ -224,6 +237,7 @@ export function catalogPublisher(
       onPhase("checkpoint_read");
       const state = await storage.readDailyState();
       const targetSha256 = sha(Buffer.from(JSON.stringify(target)));
+      let completedTargetSha256 = targetSha256;
       if (state && state.targetSha256 !== targetSha256)
         throw new Error("CATALOG_STATE_TARGET_DRIFT");
       if (
@@ -313,15 +327,36 @@ export function catalogPublisher(
           const planned = felkCatalogAddress(shop, candidate);
           // No qualified automatic discovery handover is configured. Stop BEFORE
           // staging or file creation; this status is not a completed daily update.
-          outcome = {
-            status: "LINK_UPDATE_REQUIRED",
-            sha256: target.contentSha256,
-            nextSha256: planned.sha256,
-            nextFilename: planned.filename,
-            currentFileId: fileId,
-            currentUrl: current.urls.download,
-            requiresSeparateCandidateAndLinkApproval: true,
-          } as const;
+          if (handover) {
+            const nextTarget = validateCatalogTarget(
+              await handover({
+                candidate,
+                previous: target,
+                previousUrl: current.urls.canonical,
+                storage,
+              }),
+            );
+            if (
+              nextTarget.shop !== shop ||
+              nextTarget.contentSha256 !== planned.sha256 ||
+              nextTarget.fileId === fileId
+            )
+              throw new Error("CATALOG_POINTER_DRIFT");
+            completedTargetSha256 = sha(
+              Buffer.from(JSON.stringify(nextTarget)),
+            );
+            outcome = { status: "PUBLISHED", sha256: planned.sha256 } as const;
+          } else {
+            outcome = {
+              status: "LINK_UPDATE_REQUIRED",
+              sha256: target.contentSha256,
+              nextSha256: planned.sha256,
+              nextFilename: planned.filename,
+              currentFileId: fileId,
+              currentUrl: current.urls.download,
+              requiresSeparateCandidateAndLinkApproval: true,
+            } as const;
+          }
         }
       } else if (mode === "felk-sha-candidate") {
         // A separate candidate never replaces either legacy file or its discovery link.
@@ -447,7 +482,7 @@ export function catalogPublisher(
         await storage.saveDailyState({
           completedAt: now(),
           sha256: outcome.sha256,
-          targetSha256,
+          targetSha256: completedTargetSha256,
         });
       }
       onPhase("lock_release");

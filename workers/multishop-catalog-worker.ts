@@ -1,4 +1,7 @@
-import { parseCatalogTargets } from "../app/services/llm-visibility/multishop-catalog-targets.ts";
+import {
+  parseCatalogTargets,
+  parseFelkHandoverConfig,
+} from "../app/services/llm-visibility/multishop-catalog-targets.ts";
 import { catalogPublisher } from "../app/services/llm-visibility/multishop-catalog-publication.server.ts";
 import { catalogStorage } from "../app/services/llm-visibility/multishop-catalog-storage.server.ts";
 
@@ -26,6 +29,7 @@ async function main() {
     : configured;
   if (!targets.length) throw new Error("INVALID_CATALOG_TARGETS");
   const bucket = process.env.LLM_CATALOG_BUCKET;
+  const handover = parseFelkHandoverConfig(process.env.LLM_FELK_LINK_HANDOVER);
   phase = "initialization";
   const { default: prisma } = await import("../app/db.server");
   let failed = false;
@@ -33,23 +37,37 @@ async function main() {
     for (const target of targets) {
       try {
         phase = "lock";
-        const result = await catalogPublisher(
-          target,
-          (next) => {
-            phase = next;
-          },
-          candidateOnly ? "felk-sha-candidate" : "existing-file",
-        ).refresh(
-          catalogStorage(bucket, target.shop),
-          target.shop,
-          async () => {
-            const { unauthenticated } = await import("../app/shopify.server");
-            const { admin, session } = await unauthenticated.admin(target.shop);
-            if (session.isOnline || session.shop !== target.shop)
-              throw new Error("CATALOG_SESSION_MISMATCH");
-            return admin;
-          },
-        );
+        const getAdmin = async () => {
+          const { unauthenticated } = await import("../app/shopify.server");
+          const { admin, session } = await unauthenticated.admin(target.shop);
+          if (session.isOnline || session.shop !== target.shop)
+            throw new Error("CATALOG_SESSION_MISMATCH");
+          return admin;
+        };
+        const result =
+          handover && !candidateOnly && target.shop === handover.shop
+            ? await (
+                await import("../app/services/llm-visibility/felk-catalog-handover.server.ts")
+              ).refreshFelkAutomaticCatalog({
+                target,
+                config: handover,
+                storage: catalogStorage(bucket, target.shop),
+                admin: getAdmin,
+                onPhase: (next) => {
+                  phase = next;
+                },
+              })
+            : await catalogPublisher(
+                target,
+                (next) => {
+                  phase = next;
+                },
+                candidateOnly ? "felk-sha-candidate" : "existing-file",
+              ).refresh(
+                catalogStorage(bucket, target.shop),
+                target.shop,
+                getAdmin,
+              );
         console.log(JSON.stringify({ shop: target.shop, ...result }));
         if (
           result.status === "ROLLED_BACK" ||
