@@ -7,10 +7,10 @@ import {
 } from "node:net";
 
 import {
-  parseSitemapXml,
   classifySitemapUrl,
   type SitemapResourceType,
 } from "../sitemap/sitemap-audit";
+import { parseRedirectSitemapLocations } from "./sitemap-locations";
 import {
   extractInternalLinks,
   normalizeInternalUrl,
@@ -1507,21 +1507,18 @@ async function discoverSitemapInventory(
     }
 
     const parsed =
-      parseSitemapXml(
-        fetched.html,
-        fetched.finalUrl,
-      );
+      parseRedirectSitemapLocations(fetched.html);
 
     if (
       parsed.kind === "INDEX"
     ) {
       for (
-        const child
-        of parsed.sitemaps
+        const location
+        of parsed.locations
       ) {
         const resolved =
           normalizeSitemapDocumentUrl(
-            child.loc,
+            location,
             fetched.finalUrl,
             input.allowedHost,
           );
@@ -1542,8 +1539,8 @@ async function discoverSitemapInventory(
     }
 
     for (
-      const entry
-      of parsed.urls
+      const location
+      of parsed.locations
     ) {
       if (
         urlMap.size >=
@@ -1557,7 +1554,7 @@ async function discoverSitemapInventory(
 
       const resolved =
         normalizeInternalUrl(
-          entry.loc,
+          location,
           fetched.finalUrl,
           input.allowedHost,
         );
