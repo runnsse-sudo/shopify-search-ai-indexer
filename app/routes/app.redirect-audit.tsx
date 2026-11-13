@@ -17,6 +17,7 @@ import {
   authenticate,
 } from "../shopify.server";
 import {
+  recheckAutomaticRedirect,
   runRedirectAudit,
 } from "../services/redirect-audit/redirect-audit.server";
 
@@ -108,16 +109,34 @@ export const action =
     }
 
     try {
+      const startedAt = Date.now();
       const result =
         await runRedirectAudit({
           primaryDomain:
             shop.primaryDomain,
         });
+      const deadlineAt = startedAt + result.auditDeadlineMs;
+      const coverageAllowsRecheck =
+        !result.coverage.sitemapDocumentsTruncated &&
+        !result.coverage.sitemapUrlsTruncated &&
+        !result.coverage.auditDeadlineReached &&
+        Date.now() < deadlineAt;
+      const candidates = coverageAllowsRecheck
+        ? result.brokenInternalLinks.filter(
+            (item) => item.suggestion?.eligibleForRecheck && item.redirectChain.length === 0,
+          ).slice(0, 5)
+        : [];
+      const rechecks = await Promise.all(candidates.map(async (item) => ({
+        sourceUrl: item.url,
+        verified: Boolean(await recheckAutomaticRedirect(item, result.primaryHost, undefined, deadlineAt)),
+      })));
 
       return {
         ok: true,
         error: null,
         result,
+        observedAt: new Date().toISOString(),
+        rechecks,
       };
     } catch (error) {
       console.error(
@@ -191,10 +210,30 @@ export default function RedirectAudit() {
   const result =
     fetcher.data?.result ??
     null;
+  const observedAt = fetcher.data?.ok ? fetcher.data.observedAt : undefined;
+  const rechecks = fetcher.data?.rechecks ?? [];
+  const partial = result && (
+    Object.values(result.coverage).some(Boolean) ||
+    result.sourcePagesFailed > 0 ||
+    result.internalLinksUnverified > 0
+  );
+
+  function downloadReport() {
+    if (!result || !observedAt) return;
+    const report = { schemaVersion: 1, observedAt, partial, result, rechecks };
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "redirect-audit-report.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 
   return (
     <s-page heading="404 & Redirect Audit">
-      <s-section heading="Read-only Phase B audit">
+      <s-section heading="Storefront audit">
         <s-paragraph>
           This bounded audit reads the
           Shopify sitemap and storefront
@@ -274,6 +313,12 @@ export default function RedirectAudit() {
             direction="block"
             gap="base"
           >
+            {partial ? (
+              <s-banner tone="warning">
+                This report covers only the URLs the audit could verify. See Performance &amp; coverage for details.
+              </s-banner>
+            ) : null}
+            <s-button onClick={downloadReport}>Download JSON report</s-button>
             <s-stack
               direction="inline"
               gap="base"
@@ -531,6 +576,16 @@ export default function RedirectAudit() {
                       {item.suggestion
                         ? ` → ${item.suggestion.targetUrl} (${item.suggestion.confidence}, ${item.suggestion.score})`
                         : ""}
+                      {item.suggestion && (
+                        item.suggestion.eligibleForRecheck && item.redirectChain.length === 0 &&
+                        !result.coverage.sitemapDocumentsTruncated &&
+                        !result.coverage.sitemapUrlsTruncated &&
+                        !result.coverage.auditDeadlineReached
+                          ? rechecks.find((check) => check.sourceUrl === item.url)?.verified
+                            ? " · 404 and destination verified"
+                            : " · Automatic recheck unconfirmed"
+                          : " · Review required"
+                      )}
                     </s-list-item>
                   ),
                 )}

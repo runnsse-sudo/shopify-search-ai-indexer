@@ -101,6 +101,9 @@ jobs:
       - name: Build SEO audit worker
         run: npm run build:seo-audit-worker
 
+      - name: Build automatic redirect worker
+        run: npm run build:automatic-redirect-worker
+
       - name: Build product webhook worker
         run: npm run build:product-webhook-worker
 

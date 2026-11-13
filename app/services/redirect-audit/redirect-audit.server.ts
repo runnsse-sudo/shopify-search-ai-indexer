@@ -65,6 +65,34 @@ export type RedirectAuditRedirect = {
   loopDetected: boolean;
 };
 
+export async function recheckAutomaticRedirect(
+  broken: RedirectAuditBrokenLink,
+  allowedHost: string,
+  fetchDocument: RedirectAuditFetcher = defaultFetchDocument,
+  deadlineAt?: number,
+): Promise<{ path: string; target: string } | null> {
+  if (
+    broken.statusCode !== 404 ||
+    broken.redirectChain.length > 0 ||
+    !broken.suggestion?.eligibleForRecheck
+  ) return null;
+
+  const source = normalizeInternalUrl(broken.url, broken.url, allowedHost);
+  const target = normalizeInternalUrl(broken.suggestion.targetUrl, broken.url, allowedHost);
+  if (!source || !target || source !== broken.url || target !== broken.suggestion.targetUrl ||
+      source === target || new URL(target).pathname === "/") return null;
+
+  const missing = await fetchDocument({ url: source, allowedHost, deadlineAt });
+  if (missing.statusCode !== 404 || missing.finalUrl !== source || missing.redirectChain.length ||
+      missing.loopDetected || missing.error) return null;
+
+  const live = await fetchDocument({ url: target, allowedHost, deadlineAt });
+  if (live.statusCode !== 200 || live.finalUrl !== target || live.redirectChain.length ||
+      live.loopDetected || live.error || !live.contentType?.toLowerCase().startsWith("text/html")) return null;
+
+  return { path: new URL(source).pathname, target: new URL(target).pathname };
+}
+
 export type RedirectAuditResult = {
   rootSitemapUrl: string;
   primaryHost: string;

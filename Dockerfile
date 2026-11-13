@@ -19,6 +19,7 @@ RUN npm run build:provider-materialization-worker
 RUN npm run build:provider-materialization-multishop-worker
 RUN npm run build:indexnow-multishop-worker
 RUN npm run build:seo-audit-worker
+RUN npm run build:automatic-redirect-worker
 RUN npm run build:product-webhook-worker
 RUN npm run build:robotto-catalog-worker
 RUN npm run build:multishop-catalog-worker
