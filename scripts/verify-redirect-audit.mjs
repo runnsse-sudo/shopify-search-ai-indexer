@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { runAutomaticRedirectAudit } from "../build-tests/automatic-redirect-server.mjs";
 
 import {
   extractInternalLinks,
@@ -9,6 +10,7 @@ import {
 
 import {
   isBlockedRedirectAuditAddress,
+  recheckAutomaticRedirect,
   runRedirectAudit,
 } from "../build-tests/redirect-audit-server.mjs";
 
@@ -130,6 +132,102 @@ assert.equal(
 assert.equal(
   highSuggestion?.targetUrl,
   "https://example.com/en/blogs/new-blog/widget",
+);
+assert.equal(highSuggestion?.eligibleForRecheck, true);
+
+const ambiguousSuggestion = suggestRedirect(
+  "https://example.com/en/blogs/old-blog/widget",
+  [
+    "https://example.com/en/blogs/new-blog/widget",
+    "https://example.com/en/blogs/other-blog/widget",
+  ],
+);
+assert.equal(ambiguousSuggestion?.confidence, "HIGH");
+assert.equal(ambiguousSuggestion?.eligibleForRecheck, false);
+const missingArticle = "https://example.com/en/blogs/old-blog/widget";
+const automaticCandidate = {
+  url: missingArticle,
+  statusCode: 404,
+  redirectChain: [],
+  suggestion: highSuggestion,
+};
+const recheckRequests = [];
+const directFetch = async ({ url }) => {
+  recheckRequests.push(url);
+  return {
+    finalUrl: url,
+    statusCode: url === missingArticle ? 404 : 200,
+    redirectChain: [],
+    loopDetected: false,
+    contentType: "text/html; charset=utf-8",
+    error: null,
+  };
+};
+assert.deepEqual(
+  await recheckAutomaticRedirect(automaticCandidate, "example.com", directFetch),
+  { path: "/en/blogs/old-blog/widget", target: "/en/blogs/new-blog/widget" },
+);
+assert.deepEqual(recheckRequests, [missingArticle, highSuggestion.targetUrl]);
+const auditShop = "audit-shop.myshopify.com";
+const plan = { path: "/en/blogs/old-blog/widget", target: "/en/blogs/new-blog/widget" };
+const audit = async () => ({
+  primaryHost: "example.com",
+  auditDeadlineMs: 5000,
+  coverage: {},
+  brokenInternalLinks: [automaticCandidate],
+});
+for (const scenario of ["create", "existing", "ambiguous", "missing-scope", "wrong-shop", "mutation-error"]) {
+  const calls = [];
+  const admin = {
+    async graphql(query, options) {
+      const operation = query.match(/(?:query|mutation) (\w+)/)[1];
+      calls.push(operation);
+      if (operation === "AutomaticRedirectIdentity") return Response.json({ data: {
+        shop: { myshopifyDomain: scenario === "wrong-shop" ? "other.myshopify.com" : auditShop, primaryDomain: { host: "example.com" } },
+        currentAppInstallation: { accessScopes: scenario === "missing-scope"
+          ? [{ handle: "write_online_store_navigation" }]
+          : [{ handle: "read_online_store_navigation" }, { handle: "write_online_store_navigation" }] },
+      } });
+      if (operation === "ExistingAutomaticRedirect") {
+        assert.deepEqual(options.variables, { query: 'path:"/en/blogs/old-blog/widget"' });
+        return Response.json({ data: { urlRedirects: { nodes: scenario === "existing" ? [{ path: plan.path }] : [], pageInfo: { hasNextPage: false } } } });
+      }
+      assert.equal(operation, "CreateAutomaticRedirect");
+      assert.deepEqual(options.variables, { input: plan });
+      return Response.json({ data: { urlRedirectCreate: scenario === "mutation-error"
+        ? { urlRedirect: null, userErrors: [{ field: ["path"] }] }
+        : { urlRedirect: { ...plan, id: "gid://shopify/UrlRedirect/1" }, userErrors: [] } } });
+    },
+  };
+  const run = runAutomaticRedirectAudit(auditShop, admin, audit, async () => scenario === "ambiguous" ? null : plan);
+  if (scenario === "wrong-shop" || scenario === "mutation-error") {
+    await assert.rejects(run);
+  } else {
+    const outcome = await run;
+    assert.equal(outcome.created.length, scenario === "create" ? 1 : 0);
+  }
+  assert.equal(calls.filter((op) => op === "CreateAutomaticRedirect").length,
+    ["create", "mutation-error"].includes(scenario) ? 1 : 0);
+}
+assert.equal(
+  await recheckAutomaticRedirect(automaticCandidate, "example.com", async (input) => ({
+    ...await directFetch(input),
+    redirectChain: [input.url],
+  })),
+  null,
+);
+assert.equal(
+  await recheckAutomaticRedirect(automaticCandidate, "example.com", async (input) => ({
+    ...await directFetch(input),
+    statusCode: 200,
+  })),
+  null,
+);
+assert.equal(
+  suggestRedirect("https://example.com/products/widget", [
+    "https://other.example/products/widget",
+  ]),
+  null,
 );
 
 const mediumSuggestion =

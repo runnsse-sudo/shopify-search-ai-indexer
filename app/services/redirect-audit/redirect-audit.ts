@@ -16,6 +16,7 @@ export type RedirectSuggestion = {
   confidence: RedirectConfidence;
   score: number;
   reason: string;
+  eligibleForRecheck: boolean;
 };
 
 function normalizeHost(
@@ -322,6 +323,7 @@ export function suggestRedirect(
   if (!normalizedMissing) {
     return null;
   }
+  const missingOrigin = new URL(normalizedMissing).origin;
 
   const missingType =
     classifySitemapUrl(
@@ -351,6 +353,8 @@ export function suggestRedirect(
   let best:
     RedirectSuggestion | null =
       null;
+  let runnerUpScore = 0;
+  const seen = new Set<string>();
 
   for (
     const rawCandidate
@@ -364,10 +368,13 @@ export function suggestRedirect(
     if (
       !candidate ||
       candidate ===
-        normalizedMissing
+        normalizedMissing ||
+      seen.has(candidate) ||
+      new URL(candidate).origin !== missingOrigin
     ) {
       continue;
     }
+    seen.add(candidate);
 
     const candidateLocale =
       localeKey(
@@ -482,6 +489,7 @@ export function suggestRedirect(
         score,
         reason:
           reasons.join(", "),
+        eligibleForRecheck: false,
       };
 
     if (
@@ -495,10 +503,21 @@ export function suggestRedirect(
           best.targetUrl
       )
     ) {
+      runnerUpScore = best?.score ?? runnerUpScore;
       best =
         suggestion;
+    } else {
+      runnerUpScore = Math.max(runnerUpScore, suggestion.score);
     }
   }
 
-  return best;
+  if (!best) return null;
+  return {
+    ...best,
+    eligibleForRecheck:
+      missingType !== "OTHER" &&
+      classifySitemapUrl(best.targetUrl) === missingType &&
+      best.confidence === "HIGH" &&
+      best.score - runnerUpScore >= 10,
+  };
 }
