@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { runAutomaticRedirectAudit } from "../build-tests/automatic-redirect-server.mjs";
+import { runAutomaticRedirectAudit, runMotokoHyperBodyRedirectTest } from "../build-tests/automatic-redirect-server.mjs";
 
 import {
   extractInternalLinks,
@@ -1199,3 +1199,75 @@ assert.deepEqual(
   ),
   ["https://example.com/products/real"],
 );
+
+const motokoHost = "www.robotto.se";
+const motokoShop = "robotto-7143.myshopify.com";
+const motokoPath = "/products/ghost-in-the-shell-motoko-kusanagi-simple-armor-hyper-body";
+const motokoTarget = "/products/ghost-in-the-shell-motoko-kusanagi-simple-armor-hyper-body-actionfigur";
+const motokoUrl = "https://" + motokoHost + motokoPath;
+const motokoTargetUrl = "https://" + motokoHost + motokoTarget;
+for (const scenario of ["exact", "existing", "wrong-host", "wrong-shop", "wrong-target", "ineligible", "changed-source", "changed-target", "truncated"]) {
+  let creates = 0;
+  const admin = {
+    async graphql(query, { variables }) {
+      if (query.includes("AutomaticRedirectIdentity")) return Response.json({ data: {
+        shop: {
+          myshopifyDomain: scenario === "wrong-shop" ? auditShop : motokoShop,
+          primaryDomain: { host: scenario === "wrong-host" ? "example.com" : motokoHost },
+        },
+        currentAppInstallation: { accessScopes: [
+          { handle: "read_online_store_navigation" }, { handle: "write_online_store_navigation" },
+        ] },
+      } });
+      if (query.includes("ExistingAutomaticRedirect")) {
+        assert.deepEqual(variables, { query: 'path:"' + motokoPath + '"' });
+        return Response.json({ data: { urlRedirects: {
+          nodes: scenario === "existing" ? [{ path: motokoPath }] : [],
+          pageInfo: { hasNextPage: false },
+        } } });
+      }
+      assert.equal(scenario, "exact");
+      assert.ok(query.includes("CreateAutomaticRedirect"));
+      assert.deepEqual(variables.input, { path: motokoPath, target: motokoTarget });
+      creates++;
+      return Response.json({ data: { urlRedirectCreate: {
+        urlRedirect: { ...variables.input, id: "gid://shopify/UrlRedirect/1" }, userErrors: [],
+      } } });
+    },
+  };
+  const run = runMotokoHyperBodyRedirectTest(admin, async (input) => {
+    assert.deepEqual(input, { primaryDomain: motokoHost, additionalSourcePath: motokoPath });
+    return {
+      primaryHost: motokoHost,
+      auditDeadlineMs: 5000,
+      coverage: { sitemapUrlsTruncated: scenario === "truncated" },
+      brokenInternalLinks: [automaticCandidate, {
+        url: motokoUrl,
+        statusCode: 404,
+        redirectChain: [],
+        suggestion: {
+          targetUrl: scenario === "wrong-target" ? "https://" + motokoHost + "/products/other" : motokoTargetUrl,
+          eligibleForRecheck: scenario !== "ineligible",
+        },
+      }],
+    };
+  }, (candidate, host) => recheckAutomaticRedirect(candidate, host, async ({ url }) => ({
+    finalUrl: url,
+    statusCode: url === motokoUrl ? (scenario === "changed-source" ? 200 : 404)
+      : (scenario === "changed-target" ? 404 : 200),
+    redirectChain: [],
+    loopDetected: false,
+    contentType: "text/html",
+    error: null,
+  })));
+  if (scenario === "wrong-host" || scenario === "wrong-shop") {
+    await assert.rejects(run, /MISMATCH/);
+  } else {
+    assert.equal((await run).created.length, scenario === "exact" ? 1 : 0);
+  }
+  assert.equal(creates, scenario === "exact" ? 1 : 0);
+}
+const motokoScore = suggestRedirect(motokoUrl, [motokoTargetUrl]);
+assert.equal(motokoScore.score, 88);
+assert.equal(motokoScore.eligibleForRecheck, true);
+console.log("MOTOKO_EXACT_PAIR_PASS", motokoScore.score);

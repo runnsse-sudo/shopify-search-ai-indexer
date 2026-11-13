@@ -1,10 +1,13 @@
-import { runAutomaticRedirectAudit } from "../app/services/redirect-audit/automatic-redirect.server";
+import { runAutomaticRedirectAudit, runMotokoHyperBodyRedirectTest, motokoHyperBodyShop } from "../app/services/redirect-audit/automatic-redirect.server";
 import { recheckAutomaticRedirect, runRedirectAudit } from "../app/services/redirect-audit/redirect-audit.server";
 
 async function main() {
+  const args = process.argv.slice(2);
+  const exactTest = args.length === 1 && args[0] === "--run-motoko-hyper-body-once";
   const shops = (process.env.AUTOMATIC_REDIRECT_SHOPS ?? "").split(",");
   if (
-    process.argv.slice(2).join(" ") !== "--run-enabled-redirect-audits-once" ||
+    (!exactTest && args.join(" ") !== "--run-enabled-redirect-audits-once") ||
+    (exactTest && (shops.length !== 1 || shops[0] !== motokoHyperBodyShop)) ||
     shops.length > 6 ||
     new Set(shops).size !== shops.length ||
     shops.some((shop) => !/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shop))
@@ -17,10 +20,11 @@ async function main() {
       try {
         const { admin, session } = await unauthenticated.admin(shop);
         if (session.shop !== shop || session.isOnline) throw new Error("SESSION_MISMATCH");
-        const result = await runAutomaticRedirectAudit(
-          shop, admin, runRedirectAudit, recheckAutomaticRedirect,
-          (redirect) => console.log(JSON.stringify({ shop, status: "REDIRECT_CREATED", redirect })),
-        );
+        const onCreated = (redirect: { id: string; path: string; target: string }) =>
+          console.log(JSON.stringify({ shop, status: "REDIRECT_CREATED", redirect }));
+        const result = exactTest
+          ? await runMotokoHyperBodyRedirectTest(admin, runRedirectAudit, recheckAutomaticRedirect, onCreated)
+          : await runAutomaticRedirectAudit(shop, admin, runRedirectAudit, recheckAutomaticRedirect, onCreated);
         console.log(JSON.stringify({ shop, ...result }));
         if (result.status !== "COMPLETE") process.exitCode = 1;
       } catch {
