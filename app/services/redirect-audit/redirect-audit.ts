@@ -1,4 +1,4 @@
-import * as cheerio from "cheerio";
+import { Parser } from "htmlparser2";
 
 import {
   classifySitemapUrl,
@@ -114,36 +114,32 @@ export function extractInternalLinks(
   pageUrl: string,
   allowedHost: string,
 ): string[] {
-  const $ =
-    cheerio.load(html);
+  const links = new Set<string>();
+  const rawTextTags = new Set(["iframe", "noembed", "noframes", "noscript", "plaintext"]);
+  let rawTextTag: string | undefined;
 
-  const links =
-    new Set<string>();
-
-  $("a[href]").each(
-    (_, element) => {
-      const href =
-        $(element)
-          .attr("href")
-          ?.trim();
-
-      if (!href) {
+  const parser = new Parser({
+    onopentag(name, attributes, implied) {
+      if (implied || rawTextTag) return;
+      if (rawTextTags.has(name)) {
+        rawTextTag = name;
         return;
       }
+      if (name !== "a") return;
 
-      const normalized =
-        normalizeInternalUrl(
-          href,
-          pageUrl,
-          allowedHost,
-        );
+      const href = attributes.href?.trim();
+      if (!href) return;
 
-      if (normalized) {
-        links.add(normalized);
+      const normalized = normalizeInternalUrl(href, pageUrl, allowedHost);
+      if (normalized) links.add(normalized);
+    },
+    onclosetag(name, implied) {
+      if (!implied && name === rawTextTag && name !== "plaintext") {
+        rawTextTag = undefined;
       }
     },
-  );
-
+  });
+  parser.end(html);
   return Array.from(links);
 }
 

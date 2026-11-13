@@ -1188,3 +1188,14 @@ console.log(
 console.log(
   "REDIRECT_AUDIT_VERIFY_PASS",
 );
+
+assert.deepEqual(
+  extractInternalLinks(
+    '<!-- <a href="/comment"> --><iframe><a href="/frame"></a></iframe>' +
+    '<noscript><a href="/fallback"></a></noscript><textarea><a href="/text"></a></textarea>' +
+    '<a href="/products/real?one=1&amp;two=2">Real</a><a href="https://other.example/no">External</a>',
+    "https://example.com/",
+    "example.com",
+  ),
+  ["https://example.com/products/real"],
+);

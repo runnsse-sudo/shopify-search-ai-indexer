@@ -2054,9 +2054,18 @@ export async function runRedirectAudit(
               allowedHost,
             });
 
+          const links =
+            fetched.error !== "BODY_TOO_LARGE" &&
+            fetched.error !== "AUDIT_DEADLINE_EXCEEDED" &&
+            fetched.statusCode >= 200 && fetched.statusCode < 400 &&
+            isHtml(fetched.contentType)
+              ? extractInternalLinks(fetched.html, fetched.finalUrl, allowedHost)
+              : [];
+
           return {
             source,
-            fetched,
+            fetched: { ...fetched, html: "" },
+            links,
             threw:
               false,
           };
@@ -2065,6 +2074,7 @@ export async function runRedirectAudit(
             source,
             fetched:
               null,
+            links: [],
             threw:
               true,
           };
@@ -2080,6 +2090,7 @@ export async function runRedirectAudit(
     const {
       source,
       fetched,
+      links,
       threw,
     } =
       outcome;
@@ -2180,23 +2191,6 @@ export async function runRedirectAudit(
       1;
 
 
-    if (
-      !isHtml(
-        fetched.contentType,
-      )
-    ) {
-      continue;
-    }
-
-
-    const links =
-      extractInternalLinks(
-        fetched.html,
-        fetched.finalUrl,
-        allowedHost,
-      );
-
-
     for (
       const link
       of links
@@ -2282,7 +2276,7 @@ export async function runRedirectAudit(
           return {
             link,
             sources,
-            fetched,
+            fetched: { ...fetched, html: "" },
             threw:
               false,
           };
