@@ -1710,6 +1710,7 @@ function isHtml(
 export async function runRedirectAudit(
   input: {
     primaryDomain: string;
+    additionalSourcePath?: string;
     maxSitemapDocuments?:
       number;
     maxSitemapUrls?:
@@ -2232,10 +2233,15 @@ export async function runRedirectAudit(
   // Fetches concurrent, processing deterministic.
   // --------------------------------------------------------
 
-  const linksToCheck =
-    Array.from(
-      linkSources.keys(),
-    ).slice(
+  const additionalSource = input.additionalSourcePath
+    ? normalizeInternalUrl(input.additionalSourcePath, base.toString(), allowedHost)
+    : null;
+  const linksToCheck = [
+    ...new Set([
+      ...(additionalSource ? [additionalSource] : []),
+      ...linkSources.keys(),
+    ]),
+  ].slice(
       0,
       maxLinkChecks,
     );

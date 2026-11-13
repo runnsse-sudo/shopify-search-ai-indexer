@@ -6,6 +6,23 @@ import {
 
 const navigationScopes = ["read_online_store_navigation", "write_online_store_navigation"];
 const maxCandidates = 5;
+export const motokoHyperBodyShop = "robotto-7143.myshopify.com";
+const motokoHyperBodyHost = "www.robotto.se";
+const motokoHyperBodyPair = {
+  path: "/products/ghost-in-the-shell-motoko-kusanagi-simple-armor-hyper-body",
+  target: "/products/ghost-in-the-shell-motoko-kusanagi-simple-armor-hyper-body-actionfigur",
+} as const;
+
+export function runMotokoHyperBodyRedirectTest(
+  admin: AdminGraphqlClient,
+  audit = runRedirectAudit,
+  recheck = recheckAutomaticRedirect,
+  onCreated?: Parameters<typeof runAutomaticRedirectAudit>[4],
+) {
+  return runAutomaticRedirectAudit(
+    motokoHyperBodyShop, admin, audit, recheck, onCreated, "motoko-hyper-body",
+  );
+}
 const resourcePath = /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?:(?:products|pages|collections)\/[a-z0-9-]+|blogs\/[a-z0-9-]+\/[a-z0-9-]+)$/;
 const reservedCollection = /\/collections\/(?:all|vendors|types)$/;
 
@@ -29,6 +46,7 @@ export async function runAutomaticRedirectAudit(
   audit = runRedirectAudit,
   recheck = recheckAutomaticRedirect,
   onCreated: (redirect: { id: string; path: string; target: string }) => void = () => {},
+  test?: "motoko-hyper-body",
 ) {
   const identity = await graphql<{
     shop: { myshopifyDomain: string; primaryDomain: { host: string } };
@@ -45,8 +63,16 @@ export async function runAutomaticRedirectAudit(
     return { status: "MISSING_SCOPE" as const, created: [] };
   }
 
+  const pair = test === "motoko-hyper-body" ? motokoHyperBodyPair : null;
+  if (pair && (shop !== motokoHyperBodyShop || identity.shop.primaryDomain.host !== motokoHyperBodyHost)) {
+    throw new Error("REDIRECT_TEST_IDENTITY_MISMATCH");
+  }
   const startedAt = Date.now();
-  const result = await audit({ primaryDomain: identity.shop.primaryDomain.host });
+  const result = await audit({
+    primaryDomain: identity.shop.primaryDomain.host,
+    ...(pair ? { additionalSourcePath: pair.path } : {}),
+  });
+  if (pair && result.primaryHost !== motokoHyperBodyHost) throw new Error("REDIRECT_TEST_HOST_MISMATCH");
   if (result.coverage.sitemapDocumentsTruncated ||
       result.coverage.sitemapUrlsTruncated || result.coverage.auditDeadlineReached) {
     return { status: "INCOMPLETE_SITEMAP" as const, created: [] };
@@ -58,11 +84,17 @@ export async function runAutomaticRedirectAudit(
     (link) => link.statusCode === 404 && !link.redirectChain.length && link.suggestion?.eligibleForRecheck,
   );
 
-  for (const candidate of candidates.slice(0, maxCandidates)) {
+  const selected = pair
+    ? candidates.filter(({ url, suggestion }) =>
+        url === `https://${motokoHyperBodyHost}${pair.path}` &&
+        suggestion?.targetUrl === `https://${motokoHyperBodyHost}${pair.target}`)
+    : candidates;
+  for (const candidate of selected.slice(0, pair ? 1 : maxCandidates)) {
     if (Date.now() >= deadlineAt) return { status: "DEADLINE_REACHED" as const, created };
     const plan = await recheck(candidate, result.primaryHost, undefined, deadlineAt);
     if (!plan || plan.path === plan.target || !resourcePath.test(plan.path) ||
-        !resourcePath.test(plan.target) || reservedCollection.test(plan.path) ||
+        !resourcePath.test(plan.target) || (pair && (plan.path !== pair.path || plan.target !== pair.target)) ||
+        reservedCollection.test(plan.path) ||
         reservedCollection.test(plan.target) || Date.now() >= deadlineAt) continue;
 
     const { urlRedirects } = await graphql<{
@@ -75,6 +107,11 @@ export async function runAutomaticRedirectAudit(
     }`, { query: `path:"${plan.path}"` });
     if (!Array.isArray(urlRedirects?.nodes) || urlRedirects.pageInfo?.hasNextPage !== false ||
         urlRedirects.nodes.length || Date.now() >= deadlineAt) continue;
+
+    if (pair) {
+      const fresh = await recheck(candidate, result.primaryHost, undefined, deadlineAt);
+      if (fresh?.path !== pair.path || fresh.target !== pair.target || Date.now() >= deadlineAt) continue;
+    }
 
     const { urlRedirectCreate } = await graphql<{
       urlRedirectCreate: {
@@ -96,5 +133,6 @@ export async function runAutomaticRedirectAudit(
     onCreated(redirect);
   }
   if (Date.now() >= deadlineAt) return { status: "DEADLINE_REACHED" as const, created };
+  if (pair && !created.length) return { status: "PAIR_NOT_CREATED" as const, created };
   return { status: "COMPLETE" as const, created };
 }
