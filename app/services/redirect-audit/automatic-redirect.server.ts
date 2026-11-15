@@ -67,15 +67,29 @@ export async function runAutomaticRedirectAudit(
   if (pair && (shop !== motokoHyperBodyShop || identity.shop.primaryDomain.host !== motokoHyperBodyHost)) {
     throw new Error("REDIRECT_TEST_IDENTITY_MISMATCH");
   }
+  const maxSitemapDocuments = shop === "3f457e-2.myshopify.com" ? 75 : undefined;
   const startedAt = Date.now();
   const result = await audit({
     primaryDomain: identity.shop.primaryDomain.host,
+    ...(maxSitemapDocuments === undefined ? {} : { maxSitemapDocuments }),
     ...(pair ? { additionalSourcePath: pair.path } : {}),
   });
   if (pair && result.primaryHost !== motokoHyperBodyHost) throw new Error("REDIRECT_TEST_HOST_MISMATCH");
   if (result.coverage.sitemapDocumentsTruncated ||
       result.coverage.sitemapUrlsTruncated || result.coverage.auditDeadlineReached) {
-    return { status: "INCOMPLETE_SITEMAP" as const, created: [] };
+    const { sitemapDocumentsTruncated, sitemapUrlsTruncated, auditDeadlineReached } = result.coverage;
+    const limitsReached = [
+      ...(sitemapDocumentsTruncated && !auditDeadlineReached ? ["SITEMAP_DOCUMENT_LIMIT"] : []),
+      ...(sitemapUrlsTruncated ? ["SITEMAP_URL_LIMIT"] : []),
+      ...(auditDeadlineReached ? ["AUDIT_DEADLINE"] : []),
+    ];
+    return {
+      status: "INCOMPLETE_SITEMAP" as const,
+      created: [],
+      limitsReached,
+      sitemapDocumentsFetched: result.sitemapDocumentsFetched,
+      sitemapUrls: result.sitemapUrls,
+    };
   }
 
   const deadlineAt = startedAt + result.auditDeadlineMs;

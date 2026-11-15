@@ -1271,3 +1271,63 @@ const motokoScore = suggestRedirect(motokoUrl, [motokoTargetUrl]);
 assert.equal(motokoScore.score, 88);
 assert.equal(motokoScore.eligibleForRecheck, true);
 console.log("MOTOKO_EXACT_PAIR_PASS", motokoScore.score);
+
+const nerdShop = "3f457e-2.myshopify.com";
+const sitemapChildren = Array.from({ length: 65 }, (_, i) => "/sitemap_products_" + i + ".xml");
+const sitemapFixtureFetch = async ({ url }) => {
+  const path = new URL(url).pathname;
+  const isIndex = path === "/sitemap.xml";
+  assert.ok(isIndex || sitemapChildren.includes(path), url);
+  const xml = isIndex
+    ? "<sitemapindex>" + sitemapChildren.map(child =>
+        "<sitemap><loc>https://example.com" + child + "</loc></sitemap>").join("") + "</sitemapindex>"
+    : "<urlset><url><loc>https://example.com/products/" + path.slice(1, -4) + "</loc></url></urlset>";
+  return {
+    requestedUrl: url, finalUrl: url, statusCode: 200, html: xml,
+    redirectChain: [], loopDetected: false, contentType: "application/xml", error: null,
+  };
+};
+for (const store of [nerdShop, auditShop]) {
+  const admin = {
+    async graphql(query) {
+      assert.ok(query.includes("AutomaticRedirectIdentity"), query);
+      return Response.json({ data: {
+        shop: { myshopifyDomain: store, primaryDomain: { host: "example.com" } },
+        currentAppInstallation: { accessScopes: [
+          { handle: "read_online_store_navigation" }, { handle: "write_online_store_navigation" },
+        ] },
+      } });
+    },
+  };
+  let measured;
+  const outcome = await runAutomaticRedirectAudit(store, admin, async options => {
+    assert.equal(options.maxSitemapDocuments, store === nerdShop ? 75 : undefined);
+    measured = await runRedirectAudit({
+      ...options,
+      fetchDocument: async input => input.url.includes("/products/")
+        ? { ...await sitemapFixtureFetch({ url: "https://example.com/sitemap.xml" }),
+            requestedUrl: input.url, finalUrl: input.url, html: "" }
+        : sitemapFixtureFetch(input),
+    });
+    return measured;
+  });
+  assert.equal(measured.sitemapDocumentsFetched, store === nerdShop ? 66 : 50);
+  assert.equal(outcome.status, store === nerdShop ? "COMPLETE" : "INCOMPLETE_SITEMAP");
+  assert.deepEqual(outcome.created, []);
+  if (store !== nerdShop) {
+    assert.deepEqual(outcome.limitsReached, ["SITEMAP_DOCUMENT_LIMIT"]);
+    assert.equal(outcome.sitemapDocumentsFetched, 50);
+  }
+  for (const [coverage, reason] of [
+    [{ sitemapUrlsTruncated: true }, "SITEMAP_URL_LIMIT"],
+    [{ sitemapDocumentsTruncated: true, auditDeadlineReached: true }, "AUDIT_DEADLINE"],
+  ]) {
+    const blocked = await runAutomaticRedirectAudit(store, admin, async () => ({
+      ...measured, coverage, brokenInternalLinks: [automaticCandidate],
+    }));
+    assert.equal(blocked.status, "INCOMPLETE_SITEMAP");
+    assert.deepEqual(blocked.limitsReached, [reason]);
+    assert.deepEqual(blocked.created, []);
+  }
+}
+console.log("REDIRECT_AUDIT_NERDBUTIKEN_SITEMAP_LIMIT_PASS");
