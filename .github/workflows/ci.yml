@@ -151,3 +151,9 @@ jobs:
         env:
           PRODUCT_WORKBENCH_POSTGRES_INTEGRATION: "1"
         run: node --experimental-strip-types tests/product-workbench-postgres.integration.mjs
+
+      - name: Run redirect history PostgreSQL integration
+        env:
+          REDIRECT_HISTORY_POSTGRES_INTEGRATION: "1"
+          REDIRECT_HISTORY_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/webhook_ci
+        run: npm run test:redirect-history:postgres

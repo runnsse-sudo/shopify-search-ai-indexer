@@ -279,8 +279,12 @@ async function main() {
     assert.match(version[0].server_version, /^17\./, "POSTGRES_MAJOR_NOT_17");
     console.log("POSTGRES_VERSION=" + version[0].server_version);
     const migrationRoot = join(root, "prisma", "migrations");
-    const directories = (await readdir(migrationRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
-    const baseline = directories.filter((name) => name !== featureMigration);
+    const available = (await readdir(migrationRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    // This fixture tests the webhook migration and its exact predecessors.
+    const featureIndex = available.indexOf(featureMigration);
+    assert.notEqual(featureIndex, -1, "WEBHOOK_MIGRATION_MISSING");
+    const directories = available.slice(0, featureIndex + 1);
+    const baseline = directories.slice(0, -1);
     assert.equal(baseline.length, 4); assert.equal(directories.length, 5);
     assert.equal(directories.at(-1), featureMigration);
     const sql = await readFile(join(migrationRoot, featureMigration, "migration.sql"));

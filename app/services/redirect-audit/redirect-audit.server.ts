@@ -21,6 +21,7 @@ import {
 } from "./redirect-audit";
 
 export type RedirectAuditFetchInput = {
+  directStatusOnly?: boolean;
   url: string;
   allowedHost: string;
   preserveSearch?: boolean;
@@ -1043,6 +1044,30 @@ function isRedirectStatus(
   );
 }
 
+export async function checkRedirectDestination(
+  primaryDomain: string,
+  target: string,
+  deadlineAt: number,
+  fetchDocument: RedirectAuditFetcher = defaultFetchDocument,
+): Promise<"OK" | "NOT_FOUND" | "REDIRECTS" | "UNVERIFIED"> {
+  try {
+    // Only a recorded storefront path is eligible. Do not follow the destination's redirect.
+    if (!target.startsWith("/") || target.startsWith("//") || target.includes("\\")) return "UNVERIFIED";
+    const base = storefrontBase(primaryDomain);
+    const url = new URL(target, base);
+    if (url.origin !== base.origin) return "UNVERIFIED";
+    const result = await fetchDocument({
+      url: url.href, allowedHost: base.hostname, deadlineAt, directStatusOnly: true,
+    });
+    if (result.error) return "UNVERIFIED";
+    if (result.statusCode === 404) return "NOT_FOUND";
+    if (isRedirectStatus(result.statusCode)) return "REDIRECTS";
+    return result.statusCode === 200 ? "OK" : "UNVERIFIED";
+  } catch {
+    return "UNVERIFIED";
+  }
+}
+
 async function defaultFetchDocument(
   input:
     RedirectAuditFetchInput,
@@ -1158,6 +1183,14 @@ async function defaultFetchDocument(
               controller.signal,
           },
         );
+
+      if (input.directStatusOnly) {
+        await cancelResponseBody(response);
+        return {
+          requestedUrl: requested, finalUrl: current, statusCode: response.status,
+          html: "", redirectChain, loopDetected: false, contentType: null, error: null,
+        };
+      }
 
       if (
         isRedirectStatus(
