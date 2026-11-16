@@ -45,7 +45,7 @@ export async function runAutomaticRedirectAudit(
   admin: AdminGraphqlClient,
   audit = runRedirectAudit,
   recheck = recheckAutomaticRedirect,
-  onCreated: (redirect: { id: string; path: string; target: string }) => void = () => {},
+  onCreated: (redirect: { id: string; path: string; target: string }) => void | Promise<void> = () => {},
   test?: "motoko-hyper-body",
 ) {
   const identity = await graphql<{
@@ -144,7 +144,7 @@ export async function runAutomaticRedirectAudit(
       throw new Error("REDIRECT_CREATE_UNCONFIRMED");
     }
     created.push(redirect);
-    onCreated(redirect);
+    await onCreated(redirect);
   }
   if (Date.now() >= deadlineAt) return { status: "DEADLINE_REACHED" as const, created };
   if (pair && !created.length) return { status: "PAIR_NOT_CREATED" as const, created };

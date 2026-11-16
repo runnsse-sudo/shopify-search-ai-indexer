@@ -21,6 +21,8 @@ import {
   runRedirectAudit,
 } from "../services/redirect-audit/redirect-audit.server";
 
+import { loadRedirectHistory } from "../services/redirect-audit/redirect-history.server";
+
 export const loader =
   async ({
     request,
@@ -42,7 +44,14 @@ export const loader =
         },
       });
 
+    let history = null;
+    try {
+      history = await loadRedirectHistory(prisma, session.shop);
+    } catch {
+      console.error("Redirect audit history unavailable", { shop: session.shop });
+    }
     return {
+      history,
       shopDomain:
         session.shop,
       primaryDomain:
@@ -193,6 +202,7 @@ export default function RedirectAudit() {
     shopDomain,
     primaryDomain,
     ready,
+    history,
   } =
     useLoaderData<
       typeof loader
@@ -233,6 +243,48 @@ export default function RedirectAudit() {
 
   return (
     <s-page heading="404 & Redirect Audit">
+      <s-section heading="Scheduled audit history">
+        {history === null ? (
+          <s-paragraph>Scheduled audit history is unavailable.</s-paragraph>
+        ) : history.runs.length === 0 ? (
+          <s-paragraph>No scheduled runs have been recorded for this shop yet.</s-paragraph>
+        ) : history.runs.map((run) => (
+          <s-box key={run.id} padding="base" borderWidth="base" borderRadius="base">
+            <s-heading>{new Date(run.startedAt).toISOString()} · {run.status}</s-heading>
+            {run.stopReason ? <s-paragraph>Stop reason: {run.stopReason}</s-paragraph> : null}
+            {!run.finishedAt ? <s-paragraph>No final result has been recorded.</s-paragraph> : null}
+            <s-paragraph>Recorded redirects: {run.redirects.length}</s-paragraph>
+            {run.redirects.length > 0 ? (
+              <s-unordered-list>
+                {run.redirects.map((redirect) => (
+                  <s-list-item key={redirect.shopifyId}>
+                    {redirect.source} → {redirect.target} · Shopify ID {redirect.shopifyId}
+                  </s-list-item>
+                ))}
+              </s-unordered-list>
+            ) : null}
+          </s-box>
+        ))}
+      </s-section>
+
+      <s-section heading="Redirect targets needing attention">
+        {!history ? (
+          <s-paragraph>Target checks are unavailable.</s-paragraph>
+        ) : history.targetIssues.length === 0 ? (
+          <s-paragraph>No HTTP 404 or onward redirects were found in the recorded target checks.</s-paragraph>
+        ) : (
+          <s-unordered-list>
+            {history.targetIssues.map((issue) => (
+              <s-list-item key={issue.id}>
+                {issue.source} → {issue.target} · {issue.targetStatus === "NOT_FOUND" ? "HTTP 404" : "Redirects onward"}
+                {" · Shopify ID "}{issue.shopifyId}
+                {issue.checkedAt ? ` · Checked ${new Date(issue.checkedAt).toISOString()}` : ""}
+              </s-list-item>
+            ))}
+          </s-unordered-list>
+        )}
+      </s-section>
+
       <s-section heading="Storefront audit">
         <s-paragraph>
           This bounded audit reads the
@@ -649,10 +701,6 @@ export default function RedirectAudit() {
             No IndexNow execution.
           </s-list-item>
 
-          <s-list-item>
-            No audit persistence in this
-            Phase B version.
-          </s-list-item>
         </s-unordered-list>
       </s-section>
     </s-page>
