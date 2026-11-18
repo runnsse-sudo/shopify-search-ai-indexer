@@ -10,6 +10,8 @@ import {
   recordScheduledRedirectAudit,
 } from "../build-tests/redirect-history.mjs";
 import { checkRedirectDestination } from "../build-tests/redirect-audit-server.mjs";
+import { recordCatalogRefresh } from "../app/services/llm-visibility/catalog-history.server.ts";
+import { readStoreActionOverview } from "../app/services/store-action-overview.ts";
 
 const ci = process.env.GITHUB_ACTIONS === "true";
 assert.equal(process.env.REDIRECT_HISTORY_POSTGRES_INTEGRATION, "1");
@@ -71,6 +73,19 @@ try {
   await checkStoredRedirectTargets(db, shop, "fixture.example", async () => "OK");
   history = await loadRedirectHistory(db, shop);
   assert.equal(history.targetIssues.length, 0);
+  const digest = "a".repeat(64);
+  await recordCatalogRefresh(db, shop, async () => ({ status: "UNCHANGED", sha256: digest }), () => "compare_links");
+  await recordCatalogRefresh(db, otherShop, async () => ({ status: "PUBLISHED", sha256: "b".repeat(64) }), () => "public_verify");
+  const overview = await readStoreActionOverview(db, shop);
+  assert.equal(overview.catalog.status, "UNCHANGED");
+  assert.equal(overview.redirects.issueCount, 0);
+  assert.equal(overview.redirects.summary.status, "FAILED");
+  const recorded = await db.catalogRefreshRun.findMany({ where: { shopDomain: shop } });
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].sha256, digest);
+  await assert.rejects(recordCatalogRefresh(db, shop, async () => { throw new Error("PUBLIC_HASH_NOT_VERIFIED"); }, () => "public_verify"));
+  assert.equal((await readStoreActionOverview(db, shop)).catalog.reason, "PUBLIC_HASH_NOT_VERIFIED");
+  assert.equal((await readStoreActionOverview(db, otherShop)).catalog.status, "PUBLISHED");
   console.log("Redirect history migration, per-shop isolation, partial writes and destination checks passed");
 } finally {
   await db.$disconnect();

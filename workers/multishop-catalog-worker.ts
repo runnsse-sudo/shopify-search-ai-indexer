@@ -1,3 +1,4 @@
+import { recordCatalogRefresh } from "../app/services/llm-visibility/catalog-history.server.ts";
 import {
   parseCatalogTargets,
   parseFelkHandoverConfig,
@@ -44,7 +45,7 @@ async function main() {
             throw new Error("CATALOG_SESSION_MISMATCH");
           return admin;
         };
-        const result =
+        const refresh = async () =>
           handover && !candidateOnly && target.shop === handover.shop
             ? await (
                 await import("../app/services/llm-visibility/felk-catalog-handover.server.ts")
@@ -68,6 +69,9 @@ async function main() {
                 target.shop,
                 getAdmin,
               );
+        const result = candidateOnly
+          ? await refresh()
+          : await recordCatalogRefresh(prisma, target.shop, refresh, () => phase);
         console.log(JSON.stringify({ shop: target.shop, ...result }));
         if (
           result.status === "ROLLED_BACK" ||

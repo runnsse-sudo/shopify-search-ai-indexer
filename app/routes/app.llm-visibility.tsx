@@ -58,8 +58,14 @@ export const loader =
 
 
     const primaryDomain = shop?.primaryDomain ?? await fetchPrimaryShopDomain(admin).catch((): null => null);
+    const catalogHistory = await prisma.catalogRefreshRun.findMany({
+      where: { shopDomain: session.shop },
+      orderBy: [{ startedAt: "desc" }, { id: "desc" }], take: 10,
+      select: { id: true, startedAt: true, finishedAt: true, status: true, stopReason: true, sha256: true },
+    }).catch(() => null);
 
     return {
+      catalogHistory,
       shopDomain:
         session.shop,
 
@@ -282,6 +288,7 @@ export default function LlmVisibility() {
     shopDomain,
     primaryDomain,
     ready,
+    catalogHistory,
   } =
     useLoaderData<
       typeof loader
@@ -309,6 +316,16 @@ export default function LlmVisibility() {
     <s-page
       heading="AI / LLM Visibility"
     >
+      <s-section heading="Scheduled catalog history">
+        {catalogHistory === null ? <s-paragraph>Catalog history could not be read. Reload or review the service logs.</s-paragraph>
+          : catalogHistory.length === 0 ? <s-paragraph>No catalog runs have been recorded yet. Earlier worker versions did not record catalog history.</s-paragraph>
+          : <s-stack direction="block" gap="base">{catalogHistory.map((run) => <s-box key={run.id} padding="base" borderWidth="base" borderRadius="base">
+            <s-heading>{new Date(run.startedAt).toLocaleString()} · {run.status}</s-heading>
+            <s-paragraph>Finished: {run.finishedAt ? new Date(run.finishedAt).toLocaleString() : "Pending"}</s-paragraph>
+            {run.stopReason && /^[A-Z0-9_]+$/.test(run.stopReason) && <s-paragraph>Stop reason: {run.stopReason}</s-paragraph>}
+            {run.sha256 && <s-paragraph>File SHA256: {run.sha256}</s-paragraph>}
+          </s-box>)}</s-stack>}
+      </s-section>
       {CATALOG_SHOPS.some((shop) => shop === shopDomain) && <s-section heading="Shopify Files"><CatalogFilesAccess shop={shopDomain} /></s-section>}
       {CATALOG_SHOPS.some((shop) => shop === shopDomain) && <CatalogSetup />}
       <s-section
