@@ -15,7 +15,7 @@ const targets = CATALOG_SHOPS.map((shop, i) => ({
   cdnPath: `/s/files/1/0000/000${i}/files/llms-full.txt`,
 }));
 const fixture = {
-  database: `globalThis.__dbLoaded=true; export default { async $disconnect(){globalThis.__disconnected=true;if(globalThis.__disconnectError)throw Object.assign(new Error('private database URL'),{code:'P1001'});} };`,
+  database: `globalThis.__dbLoaded=true; export default { catalogRefreshRun:{async create({data}){globalThis.__history.push(data);return{id:String(globalThis.__history.length)};},async update({data}){globalThis.__history.push(data);}}, async $disconnect(){globalThis.__disconnected=true;if(globalThis.__disconnectError)throw Object.assign(new Error('private database URL'),{code:'P1001'});} };`,
   shopify: `export const unauthenticated={async admin(shop){if(globalThis.__sessionError)throw new Error('private refresh token');return {admin:{},session:{shop,isOnline:false}};}};`,
   storage: `export function catalogStorage(bucket,shop){return {shop,async withLock(run){globalThis.__locks[shop]=true;const result=await run();delete globalThis.__locks[shop];return result;}};}`,
   publisher: `export function catalogPublisher(target,onPhase){return {async refresh(storage,shop,getAdmin){onPhase('lock');return storage.withLock(async()=>{onPhase('session');await getAdmin();const failure=globalThis.__failures[shop];if(failure){onPhase(failure.phase);throw new Error(failure.code,{cause:failure.cause?new Error(failure.cause):undefined});}return {status:'UNCHANGED',sha256:'a'.repeat(64)};});}};}`,
@@ -79,6 +79,7 @@ async function run(options = {}) {
     },
     __failures: options.failures ?? {},
     __locks: {},
+    __history: [],
     __sessionError: options.sessionError,
     __disconnectError: options.disconnectError,
     fetch() {
@@ -156,6 +157,8 @@ test("actual worker preserves three store-specific codes/phases, locks, failure 
   assert.equal(rows.length, 6);
   assert.equal(context.process.exitCode, 1);
   assert.equal(context.__disconnected, true);
+  assert.equal(context.__history.length, 12);
+  assert.equal(context.__history.filter((row) => row.status === "FAILED").length, 3);
   for (const [shop, expected] of Object.entries(failures)) {
     const row = rows.find((x) => x.shop === shop);
     assert.equal(row.status, "FAILED");

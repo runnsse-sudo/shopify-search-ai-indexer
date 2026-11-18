@@ -13,7 +13,7 @@ test.after(() => {
   else process.env.SHOPIFY_APP_URL = previousAppUrl;
 });
 let state;
-const reset=()=>{state={auth:0,reads:0,audits:0,domainReads:0,discoveredDomain:null,shop:'owner.myshopify.com',domain:'store.example'};globalThis.llmRouteFixture={authenticate:{admin:async()=>{state.auth++;if(state.authError)throw new Response(null,{status:401});return{session:{shop:state.shop},admin:{graphql:async()=>{state.domainReads++;if(state.domainError)throw Error("PRIVATE_DOMAIN_ERROR");return Response.json({data:{shop:{primaryDomain:state.discoveredDomain?{host:state.discoveredDomain,url:"https://"+state.discoveredDomain}:null}}});}}};}},db:{shop:{findUnique:async(args)=>{state.reads++;assert.equal(args.where.domain,state.shop);return {domain:state.shop,primaryDomain:state.domain};}}},audit:async(args)=>{state.audits++;assert.equal(args.primaryDomain,state.domain ?? state.discoveredDomain);if(state.error)throw Error('SYNTHETIC_PRIVATE_PROVIDER_BODY');return{primaryHost:state.domain ?? state.discoveredDomain,previews:{llmsTxt:'# Store',llmsFullTxt:'# Full'}};}};};
+const reset=()=>{state={auth:0,reads:0,audits:0,domainReads:0,discoveredDomain:null,shop:'owner.myshopify.com',domain:'store.example'};globalThis.llmRouteFixture={authenticate:{admin:async()=>{state.auth++;if(state.authError)throw new Response(null,{status:401});return{session:{shop:state.shop},admin:{graphql:async()=>{state.domainReads++;if(state.domainError)throw Error("PRIVATE_DOMAIN_ERROR");return Response.json({data:{shop:{primaryDomain:state.discoveredDomain?{host:state.discoveredDomain,url:"https://"+state.discoveredDomain}:null}}});}}};}},db:{catalogRefreshRun:{findMany:async(args)=>{assert.equal(args.where.shopDomain,state.shop);assert.equal(args.take,10);if(state.historyError)throw Error("PRIVATE_HISTORY_ERROR");return state.history??[];}},shop:{findUnique:async(args)=>{state.reads++;assert.equal(args.where.domain,state.shop);return {domain:state.shop,primaryDomain:state.domain};}}},audit:async(args)=>{state.audits++;assert.equal(args.primaryDomain,state.domain ?? state.discoveredDomain);if(state.error)throw Error('SYNTHETIC_PRIVATE_PROVIDER_BODY');return{primaryHost:state.domain ?? state.discoveredDomain,previews:{llmsTxt:'# Store',llmsFullTxt:'# Full'}};}};};
 mkdirSync('build-tests',{recursive:true});
 await build({entryPoints:['app/routes/app.llm-visibility.tsx'],outfile:'build-tests/llm-route.mjs',bundle:true,platform:'node',format:'esm',packages:'external',jsx:'automatic',plugins:[{name:'isolated-llm-route',setup(b){
  b.onResolve({filter:/db\.server$/},()=>({path:'db',namespace:'fixture'}));
@@ -47,4 +47,12 @@ test('actual rendered page explains Shopify-managed information without replacem
  reset();const routes=[{id:'llm',path:'/app/llm-visibility',loader:route.loader,Component:route.default}];const handler=createStaticHandler(routes);const context=await handler.query(new Request('https://app.example/app/llm-visibility'));const router=createStaticRouter(handler.dataRoutes,context);const html=renderToStaticMarkup(React.createElement(StaticRouterProvider,{router,context}));
  assert.match(html,/Shopify supplies the default agent-discovery information/);assert.match(html,/You do not need to write llms files/);assert.match(html,/Run AI visibility audit/);assert.doesNotMatch(html,/Download llms|publication-plan|Unpublished llms/);assert.equal(state.audits,0);
 });
+test('catalog history is scoped and unavailable history preserves the rest of the page',async()=>{
+ reset();state.history=[{id:'catalog-1',startedAt:new Date(),finishedAt:new Date(),status:'UNCHANGED',stopReason:null,sha256:'a'.repeat(64)}];
+ const result=await route.loader({request:new Request('https://app.example/app/llm-visibility'),params:{}});
+ assert.equal(result.catalogHistory.length,1);assert.equal(result.catalogHistory[0].status,'UNCHANGED');assert.equal(state.audits,0);
+ state.historyError=true;const failed=await route.loader({request:new Request('https://app.example/app/llm-visibility'),params:{}});
+ assert.equal(failed.catalogHistory,null);assert.equal(failed.ready,true);assert.doesNotMatch(JSON.stringify(failed),/PRIVATE_HISTORY_ERROR/);
+});
+
 test.after(()=>delete globalThis.llmRouteFixture);

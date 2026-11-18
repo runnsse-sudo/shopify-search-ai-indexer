@@ -95,6 +95,7 @@ model Shop {
   webhookReceipts    WebhookReceipt[]
   providerConfig     ShopProviderConfig?
   redirectAuditRuns  RedirectAuditRun[]
+  catalogRefreshRuns CatalogRefreshRun[]
   seoAuditRuns       SeoAuditRun[]
   seoAuditPages      SeoAuditPage[]
 }
@@ -374,6 +375,19 @@ model RedirectAuditRun {
   stopReason String?
   shop       Shop                    @relation(fields: [shopDomain], references: [domain], onDelete: Cascade)
   redirects  RedirectAuditCreation[]
+
+  @@index([shopDomain, startedAt])
+}
+
+model CatalogRefreshRun {
+  id         String   @id @default(cuid())
+  shopDomain String
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+  status     String   @default("RUNNING")
+  stopReason String?
+  sha256     String?
+  shop       Shop     @relation(fields: [shopDomain], references: [domain], onDelete: Cascade)
 
   @@index([shopDomain, startedAt])
 }
