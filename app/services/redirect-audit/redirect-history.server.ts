@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import type { RedirectDiagnostics } from "./automatic-redirect.server";
 import { checkRedirectDestination } from "./redirect-audit.server";
 
 type HistoryDb = Pick<PrismaClient, "redirectAuditRun" | "redirectAuditCreation">;
@@ -13,21 +14,22 @@ const safeErrors = new Set([
 export async function recordScheduledRedirectAudit(
   db: HistoryDb,
   shopDomain: string,
-  audit: (onCreated: (redirect: CreatedRedirect) => Promise<void>) => Promise<AuditResult>,
+  audit: (onCreated: (redirect: CreatedRedirect) => Promise<void>, onDiagnostics: (diagnostics: RedirectDiagnostics) => void) => Promise<AuditResult>,
 ) {
   const run = await db.redirectAuditRun.create({ data: { shopDomain }, select: { id: true } });
+  let diagnostics: RedirectDiagnostics | undefined;
   let result: AuditResult;
   try {
     result = await audit(async (redirect) => {
       await db.redirectAuditCreation.create({
         data: { runId: run.id, shopifyId: redirect.id, source: redirect.path, target: redirect.target },
       });
-    });
+    }, (value) => { diagnostics = value; });
   } catch (error) {
     const reason = error instanceof Error && safeErrors.has(error.message)
       ? error.message : "AUTOMATIC_REDIRECT_AUDIT_FAILED";
     await db.redirectAuditRun.update({
-      where: { id: run.id }, data: { status: "FAILED", stopReason: reason, finishedAt: new Date() },
+      where: { id: run.id }, data: { status: "FAILED", stopReason: reason, finishedAt: new Date(), diagnostics },
     });
     throw error;
   }
@@ -35,6 +37,7 @@ export async function recordScheduledRedirectAudit(
     where: { id: run.id },
     data: {
       status: result.status,
+      diagnostics,
       stopReason: result.status === "COMPLETE" ? null : result.limitsReached?.join(", ") || result.status,
       finishedAt: new Date(),
     },
@@ -74,7 +77,7 @@ export async function loadRedirectHistory(db: HistoryDb, shopDomain: string) {
       orderBy: [{ startedAt: "desc" }, { id: "desc" }],
       take: 10,
       select: {
-        id: true, startedAt: true, finishedAt: true, status: true, stopReason: true,
+        id: true, startedAt: true, finishedAt: true, status: true, stopReason: true, diagnostics: true,
         redirects: { orderBy: { id: "asc" }, select: { shopifyId: true, source: true, target: true } },
       },
     }),

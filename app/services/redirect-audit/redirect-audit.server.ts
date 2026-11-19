@@ -71,6 +71,7 @@ export async function recheckAutomaticRedirect(
   allowedHost: string,
   fetchDocument: RedirectAuditFetcher = defaultFetchDocument,
   deadlineAt?: number,
+  onRejected: (reason: "INVALID_RECHECK_URL" | "SOURCE_NOT_DIRECT_404" | "TARGET_NOT_DIRECT_HTML_200") => void = () => {},
 ): Promise<{ path: string; target: string } | null> {
   if (
     broken.statusCode !== 404 ||
@@ -81,15 +82,15 @@ export async function recheckAutomaticRedirect(
   const source = normalizeInternalUrl(broken.url, broken.url, allowedHost);
   const target = normalizeInternalUrl(broken.suggestion.targetUrl, broken.url, allowedHost);
   if (!source || !target || source !== broken.url || target !== broken.suggestion.targetUrl ||
-      source === target || new URL(target).pathname === "/") return null;
+      source === target || new URL(target).pathname === "/") { onRejected("INVALID_RECHECK_URL"); return null; }
 
   const missing = await fetchDocument({ url: source, allowedHost, deadlineAt });
   if (missing.statusCode !== 404 || missing.finalUrl !== source || missing.redirectChain.length ||
-      missing.loopDetected || missing.error) return null;
+      missing.loopDetected || missing.error) { onRejected("SOURCE_NOT_DIRECT_404"); return null; }
 
   const live = await fetchDocument({ url: target, allowedHost, deadlineAt });
   if (live.statusCode !== 200 || live.finalUrl !== target || live.redirectChain.length ||
-      live.loopDetected || live.error || !live.contentType?.toLowerCase().startsWith("text/html")) return null;
+      live.loopDetected || live.error || !live.contentType?.toLowerCase().startsWith("text/html")) { onRejected("TARGET_NOT_DIRECT_HTML_200"); return null; }
 
   return { path: new URL(source).pathname, target: new URL(target).pathname };
 }
@@ -136,6 +137,7 @@ export type RedirectAuditResult = {
   };
 
   notFoundCount: number;
+  verifiedDirect404Count: number;
   clientErrorCount: number;
   serverErrorCount: number;
 
@@ -2535,6 +2537,9 @@ export async function runRedirectAudit(
       auditDeadlineReached,
     },
 
+    verifiedDirect404Count: new Set(brokenInternalLinks.filter(
+      (link) => link.statusCode === 404 && !link.error && !link.redirectChain.length,
+    ).map((link) => link.url)).size,
     notFoundCount:
       brokenInternalLinks.filter(
         (item) =>

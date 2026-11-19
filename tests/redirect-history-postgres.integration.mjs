@@ -34,7 +34,12 @@ try {
   await db.shop.createMany({ data: [{ domain: shop }, { domain: otherShop }] });
   const missing = { id: "gid://shopify/UrlRedirect/1", path: "/products/old-one", target: "/products/not-found" };
   const onward = { id: "gid://shopify/UrlRedirect/2", path: "/products/old-two", target: "/products/onward" };
-  await recordScheduledRedirectAudit(db, shop, async (save) => {
+  const diagnostics = {
+    verified404Count: 2, checkedLinks: 10, unverifiedLinks: 1,
+    skipped: [{ path: "/products/old-two", reason: "NO_SUGGESTED_TARGET", score: null }],
+  };
+  await recordScheduledRedirectAudit(db, shop, async (save, observe) => {
+    observe(diagnostics);
     await save(missing);
     return { status: "COMPLETE" };
   });
@@ -60,6 +65,8 @@ try {
   assert.deepEqual(requested.sort(), [missing.target, onward.target].sort());
   let history = await loadRedirectHistory(db, shop);
   assert.equal(history.runs.length, 3);
+  assert.deepEqual(history.runs.find((run) => run.status === "COMPLETE").diagnostics, diagnostics);
+  assert.equal((await loadRedirectHistory(db, otherShop)).runs[0].diagnostics, null);
   const failed = history.runs.find((run) => run.status === "FAILED");
   assert.equal(failed.stopReason, "AUTOMATIC_REDIRECT_AUDIT_FAILED");
   assert.deepEqual(failed.redirects, [{ shopifyId: onward.id, source: onward.path, target: onward.target }]);

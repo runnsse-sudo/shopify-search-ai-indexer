@@ -373,6 +373,7 @@ model RedirectAuditRun {
   finishedAt DateTime?
   status     String                  @default("RUNNING")
   stopReason String?
+  diagnostics Json?
   shop       Shop                    @relation(fields: [shopDomain], references: [domain], onDelete: Cascade)
   redirects  RedirectAuditCreation[]
 
