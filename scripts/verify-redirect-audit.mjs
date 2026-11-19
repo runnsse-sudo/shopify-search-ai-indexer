@@ -144,6 +144,7 @@ const ambiguousSuggestion = suggestRedirect(
 );
 assert.equal(ambiguousSuggestion?.confidence, "HIGH");
 assert.equal(ambiguousSuggestion?.eligibleForRecheck, false);
+assert.equal(ambiguousSuggestion?.ineligibleReason, "AMBIGUOUS_TARGET");
 const missingArticle = "https://example.com/en/blogs/old-blog/widget";
 const automaticCandidate = {
   url: missingArticle,
@@ -168,6 +169,18 @@ assert.deepEqual(
   { path: "/en/blogs/old-blog/widget", target: "/en/blogs/new-blog/widget" },
 );
 assert.deepEqual(recheckRequests, [missingArticle, highSuggestion.targetUrl]);
+for (const [sourceStatus, targetStatus, expected] of [
+  [200, 200, "SOURCE_NOT_DIRECT_404"],
+  [404, 503, "TARGET_NOT_DIRECT_HTML_200"],
+]) {
+  const reasons = [];
+  assert.equal(await recheckAutomaticRedirect(automaticCandidate, "example.com", async (input) => ({
+    ...await directFetch(input),
+    statusCode: input.url === missingArticle ? sourceStatus : targetStatus,
+  }), undefined, (reason) => reasons.push(reason)), null);
+  assert.deepEqual(reasons, [expected]);
+}
+
 const auditShop = "audit-shop.myshopify.com";
 const plan = { path: "/en/blogs/old-blog/widget", target: "/en/blogs/new-blog/widget" };
 const audit = async () => ({
@@ -199,12 +212,26 @@ for (const scenario of ["create", "existing", "ambiguous", "missing-scope", "wro
         : { urlRedirect: { ...plan, id: "gid://shopify/UrlRedirect/1" }, userErrors: [] } } });
     },
   };
-  const run = runAutomaticRedirectAudit(auditShop, admin, audit, async () => scenario === "ambiguous" ? null : plan);
+  let diagnostics;
+  const run = runAutomaticRedirectAudit(auditShop, admin, audit,
+    async () => scenario === "ambiguous" ? null : plan,
+    undefined, undefined, (value) => { diagnostics = value; });
+
   if (scenario === "wrong-shop" || scenario === "mutation-error") {
     await assert.rejects(run);
   } else {
     const outcome = await run;
     assert.equal(outcome.created.length, scenario === "create" ? 1 : 0);
+  }
+  if (["missing-scope", "wrong-shop"].includes(scenario)) {
+    assert.equal(diagnostics, undefined);
+  } else {
+    assert.equal(diagnostics.verified404Count, 1);
+    assert.deepEqual(diagnostics.skipped.map(({ reason }) => reason), ({
+      existing: ["REDIRECT_ALREADY_EXISTS"],
+      ambiguous: ["RECHECK_UNVERIFIED"],
+      "mutation-error": ["CANDIDATE_OUTCOME_UNCONFIRMED"],
+    })[scenario] ?? []);
   }
   assert.equal(calls.filter((op) => op === "CreateAutomaticRedirect").length,
     ["create", "mutation-error"].includes(scenario) ? 1 : 0);

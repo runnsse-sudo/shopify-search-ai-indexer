@@ -33,12 +33,12 @@ async function main() {
         };
         const result = exactTest
           ? await runMotokoHyperBodyRedirectTest(await getAdmin(), runRedirectAudit, recheckAutomaticRedirect, logCreated)
-          : await recordScheduledRedirectAudit(prisma, shop, async (saveCreated) => {
+          : await recordScheduledRedirectAudit(prisma, shop, async (saveCreated, saveDiagnostics) => {
               const admin = await getAdmin();
               return runAutomaticRedirectAudit(shop, admin, runRedirectAudit, recheckAutomaticRedirect, async (redirect) => {
                 logCreated(redirect);
                 await saveCreated(redirect);
-              });
+              }, undefined, saveDiagnostics);
             });
         console.log(JSON.stringify({ shop, ...result }));
         if (result.status !== "COMPLETE") process.exitCode = 1;

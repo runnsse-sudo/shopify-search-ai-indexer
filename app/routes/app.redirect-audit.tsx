@@ -23,6 +23,47 @@ import {
 
 import { loadRedirectHistory } from "../services/redirect-audit/redirect-history.server";
 
+import type { RedirectDiagnostics } from "../services/redirect-audit/automatic-redirect.server";
+
+const skipExplanations: Record<string, string> = {
+  INCOMPLETE_SITEMAP: "Sitemap coverage stopped automatic redirects",
+  SOURCE_HAS_REDIRECT_CHAIN: "Source already redirects before returning 404",
+  NO_SUGGESTED_TARGET: "No replacement page matched",
+  SUGGESTION_NOT_ELIGIBLE: "Match did not meet the confidence, page type or clear-winner requirements",
+  RESOURCE_TYPE_MISMATCH: "Source and target are not compatible page types",
+  LOW_MATCH_CONFIDENCE: "Replacement match scored below the required confidence",
+  AMBIGUOUS_TARGET: "Another replacement scored too close to the best match",
+  OUTSIDE_EXACT_TEST: "Outside the approved test pair",
+  CANDIDATE_LIMIT: "Outside the run's candidate limit",
+  INVALID_RECHECK_URL: "Source or target URL did not pass validation",
+  SOURCE_NOT_DIRECT_404: "Source no longer verified as a direct 404",
+  TARGET_NOT_DIRECT_HTML_200: "Target did not verify as a direct HTML page with HTTP 200",
+  RECHECK_UNVERIFIED: "The source and target could not be verified",
+  PATH_POLICY_REJECTED: "Source or target path did not pass the redirect rules",
+  REDIRECT_ALREADY_EXISTS: "Shopify already has a redirect for the source",
+  REDIRECT_LOOKUP_UNVERIFIED: "Shopify redirect lookup could not confirm an empty result",
+  EXACT_PAIR_RECHECK_FAILED: "The approved pair failed its final recheck",
+  DEADLINE_REACHED: "The audit time limit was reached",
+  CANDIDATE_OUTCOME_UNCONFIRMED: "The run stopped before this candidate's outcome was confirmed",
+  RUN_STOPPED_BEFORE_OUTCOME: "The run stopped before this candidate was checked",
+};
+
+function RunDiagnostics({ diagnostics }: { diagnostics: RedirectDiagnostics | null }) {
+  if (!diagnostics) return <s-paragraph>Verified 404s and candidate reasons were not recorded.</s-paragraph>;
+  return <>
+    <s-paragraph>Verified direct 404s: {diagnostics.verified404Count} · Links checked: {diagnostics.checkedLinks} · Unverified links: {diagnostics.unverifiedLinks}</s-paragraph>
+    {!!diagnostics.unlisted404Count && <s-paragraph>{diagnostics.unlisted404Count} additional 404s were outside the audit’s detailed result limit.</s-paragraph>}
+    {diagnostics.skipped.length > 0 && <details>
+      <summary>Skipped candidates ({diagnostics.skipped.length})</summary>
+      <s-unordered-list>
+        {diagnostics.skipped.map(({ path, reason, score }, index) => (
+          <s-list-item key={index}>{path} · {skipExplanations[reason] ?? reason}{score === null ? "" : ` · Match score ${score}`}</s-list-item>
+        ))}
+      </s-unordered-list>
+    </details>}
+  </>;
+}
+
 export const loader =
   async ({
     request,
@@ -253,6 +294,7 @@ export default function RedirectAudit() {
             <s-heading>{new Date(run.startedAt).toISOString()} Â· {run.status}</s-heading>
             {run.stopReason ? <s-paragraph>Stop reason: {run.stopReason}</s-paragraph> : null}
             {!run.finishedAt ? <s-paragraph>No final result has been recorded.</s-paragraph> : null}
+            <RunDiagnostics diagnostics={run.diagnostics as RedirectDiagnostics | null} />
             <s-paragraph>Recorded redirects: {run.redirects.length}</s-paragraph>
             {run.redirects.length > 0 ? (
               <s-unordered-list>

@@ -17,6 +17,7 @@ export type RedirectSuggestion = {
   score: number;
   reason: string;
   eligibleForRecheck: boolean;
+  ineligibleReason?: "RESOURCE_TYPE_MISMATCH" | "LOW_MATCH_CONFIDENCE" | "AMBIGUOUS_TARGET";
 };
 
 function normalizeHost(
@@ -508,12 +509,17 @@ export function suggestRedirect(
   }
 
   if (!best) return null;
+  const ineligibleReason =
+    missingType === "OTHER" || classifySitemapUrl(best.targetUrl) !== missingType
+      ? "RESOURCE_TYPE_MISMATCH"
+      : best.confidence !== "HIGH"
+        ? "LOW_MATCH_CONFIDENCE"
+        : !(best.score - runnerUpScore >= 10)
+          ? "AMBIGUOUS_TARGET"
+          : undefined;
   return {
     ...best,
-    eligibleForRecheck:
-      missingType !== "OTHER" &&
-      classifySitemapUrl(best.targetUrl) === missingType &&
-      best.confidence === "HIGH" &&
-      best.score - runnerUpScore >= 10,
+    eligibleForRecheck: ineligibleReason === undefined,
+    ...(ineligibleReason && { ineligibleReason }),
   };
 }
