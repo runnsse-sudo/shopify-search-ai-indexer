@@ -61,7 +61,7 @@ function RunDiagnostics({ diagnostics }: { diagnostics: RedirectDiagnostics | nu
   if (!diagnostics) return <s-paragraph>Verified 404s and candidate reasons were not recorded.</s-paragraph>;
   return <>
     <s-paragraph>Verified direct 404s: {diagnostics.verified404Count} | Links checked: {diagnostics.checkedLinks} | Unverified links: {diagnostics.unverifiedLinks}</s-paragraph>
-    {!!diagnostics.unlisted404Count && <s-paragraph>{diagnostics.unlisted404Count} additional 404s were outside the audit's detailed result limit.</s-paragraph>}
+    {!!diagnostics.unlisted404Count && <s-paragraph>{diagnostics.unlisted404Count} additional 404s were outside the detailed audit result limit.</s-paragraph>}
     {diagnostics.skipped.length > 0 && <details>
       <summary>Skipped candidates ({diagnostics.skipped.length})</summary>
       <s-unordered-list>
