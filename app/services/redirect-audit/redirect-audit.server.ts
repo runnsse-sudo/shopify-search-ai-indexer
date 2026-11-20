@@ -10,6 +10,7 @@ import {
   classifySitemapUrl,
   type SitemapResourceType,
 } from "../sitemap/sitemap-audit";
+import { isDiscoveryPath, type DiscoveryObservation } from "./discovery-import";
 import { parseRedirectSitemapLocations } from "./sitemap-locations";
 import {
   extractInternalLinks,
@@ -1746,6 +1747,9 @@ export async function runRedirectAudit(
   input: {
     primaryDomain: string;
     additionalSourcePath?: string;
+    discoveryPaths?: readonly string[];
+    onDiscoveryObservation?: (observation: DiscoveryObservation) => void;
+    sourceRotationDay?: number;
     maxSitemapDocuments?:
       number;
     maxSitemapUrls?:
@@ -1908,11 +1912,16 @@ export async function runRedirectAudit(
     );
 
 
-  const sourcePages =
-    selectSourcePages(
-      inventory.entries,
-      maxSourcePages,
-    );
+  const day = input.sourceRotationDay;
+  const offset = day === undefined || !inventory.entries.length
+    ? 0
+    : (day * maxSourcePages) % inventory.entries.length;
+  const sourcePages = day === undefined
+    ? selectSourcePages(inventory.entries, maxSourcePages)
+    : [
+        ...inventory.entries.slice(offset, offset + maxSourcePages),
+        ...inventory.entries.slice(0, Math.max(0, offset + maxSourcePages - inventory.entries.length)),
+      ].slice(0, Math.min(maxSourcePages, inventory.entries.length));
 
 
   let sourcePagesTruncated =
@@ -2271,19 +2280,19 @@ export async function runRedirectAudit(
   const additionalSource = input.additionalSourcePath
     ? normalizeInternalUrl(input.additionalSourcePath, base.toString(), allowedHost)
     : null;
-  const linksToCheck = [
+  const discoveredLinks = [
     ...new Set([
       ...(additionalSource ? [additionalSource] : []),
+      ...(input.discoveryPaths ?? []).map((path) => normalizeInternalUrl(path, base.toString(), allowedHost))
+        .filter((url): url is string => url !== null),
       ...linkSources.keys(),
     ]),
-  ].slice(
-      0,
-      maxLinkChecks,
-    );
+  ];
+  const linksToCheck = discoveredLinks.slice(0, maxLinkChecks);
 
 
   let internalLinksTruncated =
-    linkSources.size >
+    discoveredLinks.length >
     linksToCheck.length;
 
 
@@ -2346,6 +2355,19 @@ export async function runRedirectAudit(
       threw,
     } =
       outcome;
+
+    if (input.onDiscoveryObservation) {
+      const { pathname: path } = new URL(link);
+      if (isDiscoveryPath(path)) {
+        const status = threw || !fetched || fetched.error || fetched.loopDetected ||
+          fetched.statusCode < 200 || fetched.statusCode === 403 || fetched.statusCode === 429 ||
+          fetched.statusCode >= 500
+          ? "UNVERIFIED"
+          : fetched.statusCode === 404 && !fetched.redirectChain.length &&
+            fetched.finalUrl === link ? "DIRECT_404" : "OTHER_RESPONSE";
+        input.onDiscoveryObservation({ path, status });
+      }
+    }
 
     if (
       threw ||
@@ -2496,7 +2518,7 @@ export async function runRedirectAudit(
     sourcePagesFailed,
 
     internalLinksDiscovered:
-      linkSources.size,
+      discoveredLinks.length,
 
     internalLinksChecked:
       linksToCheck.length,

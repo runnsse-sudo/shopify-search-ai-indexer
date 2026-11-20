@@ -1,3 +1,5 @@
+import { rememberDiscoveryObservations } from "../app/services/redirect-audit/discovery-queue.server";
+import type { DiscoveryObservation } from "../app/services/redirect-audit/discovery-import";
 import { runAutomaticRedirectAudit, runMotokoHyperBodyRedirectTest, motokoHyperBodyShop } from "../app/services/redirect-audit/automatic-redirect.server";
 import { recheckAutomaticRedirect, runRedirectAudit } from "../app/services/redirect-audit/redirect-audit.server";
 
@@ -31,11 +33,16 @@ async function main() {
           if (session.shop !== shop || session.isOnline) throw new Error("SESSION_MISMATCH");
           return admin;
         };
+        const observedAt = new Date();
+        const observations: DiscoveryObservation[] = [];
         const result = exactTest
           ? await runMotokoHyperBodyRedirectTest(await getAdmin(), runRedirectAudit, recheckAutomaticRedirect, logCreated)
           : await recordScheduledRedirectAudit(prisma, shop, async (saveCreated, saveDiagnostics) => {
               const admin = await getAdmin();
-              return runAutomaticRedirectAudit(shop, admin, runRedirectAudit, recheckAutomaticRedirect, async (redirect) => {
+              return runAutomaticRedirectAudit(shop, admin, (options) => runRedirectAudit({
+                ...options,
+                onDiscoveryObservation: (observation) => observations.push(observation),
+              }), recheckAutomaticRedirect, async (redirect) => {
                 logCreated(redirect);
                 await saveCreated(redirect);
               }, undefined, saveDiagnostics);
@@ -45,8 +52,15 @@ async function main() {
         if (!exactTest && result.status !== "MISSING_SCOPE") {
           try {
             const storefront = await prisma.shop.findUnique({
-              where: { domain: shop }, select: { primaryDomain: true },
+              where: { domain: shop }, select: { id: true, primaryDomain: true },
             });
+            if (storefront && observations.length) {
+              try {
+                await rememberDiscoveryObservations(prisma, storefront.id, observations, observedAt);
+              } catch {
+                console.error(JSON.stringify({ shop, status: "REDIRECT_DISCOVERY_QUEUE_SAVE_FAILED" }));
+              }
+            }
             if (storefront?.primaryDomain) await checkStoredRedirectTargets(prisma, shop, storefront.primaryDomain);
           } catch {
             console.error(JSON.stringify({ shop, status: "REDIRECT_TARGET_CHECK_FAILED" }));

@@ -95,6 +95,7 @@ model Shop {
   webhookReceipts    WebhookReceipt[]
   providerConfig     ShopProviderConfig?
   redirectAuditRuns  RedirectAuditRun[]
+  redirectDiscoveryEntries RedirectDiscoveryEntry[]
   catalogRefreshRuns CatalogRefreshRun[]
   seoAuditRuns       SeoAuditRun[]
   seoAuditPages      SeoAuditPage[]
@@ -404,4 +405,17 @@ model RedirectAuditCreation {
   run          RedirectAuditRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@index([runId])
+}
+
+model RedirectDiscoveryEntry {
+  shopId        String
+  path          String
+  firstSeenAt   DateTime
+  lastCheckedAt DateTime?
+  importedAt    DateTime?
+  status        String
+  shop          Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@id([shopId, path])
+  @@index([shopId, status, lastCheckedAt])
 }
