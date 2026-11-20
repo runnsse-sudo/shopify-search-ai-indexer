@@ -12,7 +12,7 @@ export type RedirectDiagnostics = {
   checkedLinks: number;
   unlisted404Count?: number;
   unverifiedLinks: number;
-  skipped: { path: string; reason: string; score: number | null }[];
+  skipped: { path: string; reason: string; score: number | null; targetPath?: string }[];
 };
 function diagnosticPath(url: string) {
   try {
@@ -101,7 +101,11 @@ export async function runAutomaticRedirectAudit(
     skipped: [],
   };
   const skip = (link: RedirectAuditBrokenLink, reason: string) => {
-    diagnostics.skipped.push({ path: diagnosticPath(link.url), reason, score: link.suggestion?.score ?? null });
+    const targetPath = link.suggestion && diagnosticPath(link.suggestion.targetUrl);
+    diagnostics.skipped.push({
+      path: diagnosticPath(link.url), reason, score: link.suggestion?.score ?? null,
+      ...(targetPath?.startsWith("/") && { targetPath }),
+    });
   };
   onDiagnostics(diagnostics);
   if (result.coverage.sitemapDocumentsTruncated ||

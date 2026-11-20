@@ -1,4 +1,17 @@
 import assert from "node:assert/strict";
+import { parseDiscoveryUrls } from "../build-tests/discovery-import.mjs";
+
+const discoveryOrigin = new URL("https://example.com");
+assert.deepEqual(parseDiscoveryUrls(
+  'URL,Last crawled\r\n"https://example.com/products/old?variant=2",2026-11-20\r\n' +
+  "https://example.com/products/old\nhttps://other.test/products/old\nhttps://example.com/products/a%2Fb",
+  discoveryOrigin,
+), { paths: ["/products/old"], ignored: 2 });
+assert.throws(() => parseDiscoveryUrls("x".repeat(32_769), discoveryOrigin), /exceeds/);
+assert.throws(() => parseDiscoveryUrls(
+  Array.from({ length: 101 }, (_, index) => `https://example.com/products/${index}`).join("\n"),
+  discoveryOrigin,
+), /at most 100/);
 import { runAutomaticRedirectAudit, runMotokoHyperBodyRedirectTest } from "../build-tests/automatic-redirect-server.mjs";
 
 import {
@@ -1358,3 +1371,40 @@ for (const store of [nerdShop, auditShop]) {
   }
 }
 console.log("REDIRECT_AUDIT_NERDBUTIKEN_SITEMAP_LIMIT_PASS");
+
+const discoveryFetches = [];
+const discoveryObservations = [];
+const discoveryResult = await runRedirectAudit({
+  primaryDomain: "example.com",
+  discoveryPaths: ["/products/widget-old"],
+  onDiscoveryObservation: (item) => discoveryObservations.push(item),
+  sourceRotationDay: 1,
+  maxSourcePages: 1,
+  maxLinkChecks: 1,
+  fetchDocument: async (input) => {
+    discoveryFetches.push(input.url);
+    return fetchDocumentFixture(input);
+  },
+});
+assert.equal(discoveryResult.internalLinksChecked, 1);
+assert.equal(discoveryResult.verifiedDirect404Count, 1);
+assert.deepEqual(discoveryObservations, [{ path: "/products/widget-old", status: "DIRECT_404" }]);
+assert.ok(discoveryFetches.includes("https://example.com/products/widget-old"));
+
+const rotatedSources = await Promise.all([0, 1, 2].map(async (sourceRotationDay) => {
+  const pages = [];
+  await runRedirectAudit({
+    primaryDomain: "example.com",
+    sourceRotationDay,
+    maxSourcePages: 1,
+    maxLinkChecks: 0,
+    fetchDocument: async (input) => {
+      if (!new URL(input.url).pathname.startsWith("/sitemap")) pages.push(input.url);
+      return fetchDocumentFixture(input);
+    },
+  });
+  assert.equal(pages.length, 1);
+  return pages[0];
+}));
+assert.equal(new Set(rotatedSources).size, 3);
+console.log("REDIRECT_AUDIT_DISCOVERY_IMPORT_AND_ROTATION_PASS");

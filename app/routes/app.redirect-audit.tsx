@@ -23,7 +23,16 @@ import {
 
 import { loadRedirectHistory } from "../services/redirect-audit/redirect-history.server";
 
+import { loadDiscoveryQueue, rememberDiscoveryImport, rememberDiscoveryObservations } from "../services/redirect-audit/discovery-queue.server";
+import { DiscoveryInputError, discoveryInputLimit, parseDiscoveryUrls, type DiscoveryObservation } from "../services/redirect-audit/discovery-import";
 import type { RedirectDiagnostics } from "../services/redirect-audit/automatic-redirect.server";
+
+const queueStatusLabels = {
+  PENDING: "Awaiting check",
+  UNVERIFIED: "Could not verify",
+  DIRECT_404: "Verified direct 404",
+  OTHER_RESPONSE: "Other response",
+};
 
 const skipExplanations: Record<string, string> = {
   INCOMPLETE_SITEMAP: "Sitemap coverage stopped automatic redirects",
@@ -51,13 +60,13 @@ const skipExplanations: Record<string, string> = {
 function RunDiagnostics({ diagnostics }: { diagnostics: RedirectDiagnostics | null }) {
   if (!diagnostics) return <s-paragraph>Verified 404s and candidate reasons were not recorded.</s-paragraph>;
   return <>
-    <s-paragraph>Verified direct 404s: {diagnostics.verified404Count} · Links checked: {diagnostics.checkedLinks} · Unverified links: {diagnostics.unverifiedLinks}</s-paragraph>
-    {!!diagnostics.unlisted404Count && <s-paragraph>{diagnostics.unlisted404Count} additional 404s were outside the audit’s detailed result limit.</s-paragraph>}
+    <s-paragraph>Verified direct 404s: {diagnostics.verified404Count} | Links checked: {diagnostics.checkedLinks} | Unverified links: {diagnostics.unverifiedLinks}</s-paragraph>
+    {!!diagnostics.unlisted404Count && <s-paragraph>{diagnostics.unlisted404Count} additional 404s were outside the detailed audit result limit.</s-paragraph>}
     {diagnostics.skipped.length > 0 && <details>
       <summary>Skipped candidates ({diagnostics.skipped.length})</summary>
       <s-unordered-list>
-        {diagnostics.skipped.map(({ path, reason, score }, index) => (
-          <s-list-item key={index}>{path} · {skipExplanations[reason] ?? reason}{score === null ? "" : ` · Match score ${score}`}</s-list-item>
+        {diagnostics.skipped.map(({ path, reason, score, targetPath }, index) => (
+          <s-list-item key={index}>{path}{targetPath && ` â†’ ${targetPath}`} | {skipExplanations[reason] ?? reason}{score === null ? "" : ` | Match score ${score}`}</s-list-item>
         ))}
       </s-unordered-list>
     </details>}
@@ -80,7 +89,7 @@ export const loader =
             session.shop,
         },
         select: {
-          domain: true,
+          id: true, domain: true,
           primaryDomain: true,
         },
       });
@@ -91,7 +100,11 @@ export const loader =
     } catch {
       console.error("Redirect audit history unavailable", { shop: session.shop });
     }
+    const queue = shop
+      ? await loadDiscoveryQueue(prisma, shop.id).catch(() => null)
+      : [];
     return {
+      queue,
       history,
       shopDomain:
         session.shop,
@@ -114,8 +127,33 @@ export const action =
         request,
       );
 
-    const formData =
-      await request.formData();
+    const mediaType = request.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+    if (mediaType !== "application/x-www-form-urlencoded") {
+      throw new Response("Unsupported form", { status: 415 });
+    }
+    const reader = request.body?.getReader();
+    const decoder = new TextDecoder();
+    let encoded = "";
+    let size = 0;
+    if (reader) {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          // UTF-8 percent encoding can expand each input character.
+          if (size > discoveryInputLimit * 9 + 256) {
+            await reader.cancel();
+            throw new Response("Form too large", { status: 413 });
+          }
+          encoded += decoder.decode(value, { stream: true });
+        }
+        encoded += decoder.decode();
+      } finally {
+        reader.releaseLock();
+      }
+    }
+    const formData = new URLSearchParams(encoded);
 
     const intent =
       String(
@@ -124,10 +162,7 @@ export const action =
         ) ?? "",
       );
 
-    if (
-      intent !==
-      "run-read-only"
-    ) {
+    if (intent !== "run-read-only" && intent !== "run-discovery") {
       return {
         ok: false,
         error:
@@ -143,7 +178,7 @@ export const action =
             session.shop,
         },
         select: {
-          primaryDomain: true,
+          id: true, primaryDomain: true,
         },
       });
 
@@ -158,13 +193,38 @@ export const action =
       };
     }
 
+    const appUrl = process.env.SHOPIFY_APP_URL ? URL.parse(process.env.SHOPIFY_APP_URL) : null;
+    if (intent === "run-discovery" && (!appUrl || request.headers.get("origin") !== appUrl.origin)) {
+      throw new Response("Request not permitted", { status: 403 });
+    }
+
     try {
+      const discovery = intent === "run-discovery"
+        ? parseDiscoveryUrls(String(formData.get("discoveryUrls") ?? ""), new URL(shop.primaryDomain.includes("://") ? shop.primaryDomain : `https://${shop.primaryDomain}`))
+        : null;
       const startedAt = Date.now();
+      const checkedAt = new Date(startedAt);
+      const observations: DiscoveryObservation[] = [];
+      let queuePaths: string[] = [];
+      if (discovery) {
+        await rememberDiscoveryImport(prisma, shop.id, discovery.paths, checkedAt);
+        const queue = await loadDiscoveryQueue(prisma, shop.id);
+        queuePaths = queue.filter(({ status }) => status !== "OTHER_RESPONSE").map(({ path }) => path);
+      }
       const result =
         await runRedirectAudit({
           primaryDomain:
             shop.primaryDomain,
+          ...(discovery && {
+            discoveryPaths: [...new Set([...discovery.paths, ...queuePaths])],
+            onDiscoveryObservation: (observation) => observations.push(observation),
+            sourceRotationDay: Math.floor(startedAt / 86_400_000),
+            maxSourcePages: 50,
+            maxLinkChecks: 250,
+            ...(session.shop === "3f457e-2.myshopify.com" && { maxSitemapDocuments: 75 }),
+          }),
         });
+      if (discovery) await rememberDiscoveryObservations(prisma, shop.id, observations, checkedAt);
       const deadlineAt = startedAt + result.auditDeadlineMs;
       const coverageAllowsRecheck =
         !result.coverage.sitemapDocumentsTruncated &&
@@ -187,6 +247,7 @@ export const action =
         result,
         observedAt: new Date().toISOString(),
         rechecks,
+        discovery: discovery && { imported: discovery.paths.length, ignored: discovery.ignored },
       };
     } catch (error) {
       console.error(
@@ -194,16 +255,15 @@ export const action =
         {
           shop:
             session.shop,
-          error,
+          ...(intent !== "run-discovery" && { error }),
         },
       );
 
       return {
         ok: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Redirect audit failed.",
+        error: error instanceof DiscoveryInputError || (intent !== "run-discovery" && error instanceof Error)
+          ? error.message
+          : "Redirect audit failed.",
         result: null,
       };
     }
@@ -244,6 +304,7 @@ export default function RedirectAudit() {
     primaryDomain,
     ready,
     history,
+    queue,
   } =
     useLoaderData<
       typeof loader
@@ -271,7 +332,7 @@ export default function RedirectAudit() {
 
   function downloadReport() {
     if (!result || !observedAt) return;
-    const report = { schemaVersion: 1, observedAt, partial, result, rechecks };
+    const report = { schemaVersion: 1, observedAt, partial, result, rechecks, discovery: fetcher.data?.discovery ?? null };
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }),
     );
@@ -284,6 +345,20 @@ export default function RedirectAudit() {
 
   return (
     <s-page heading="404 & Redirect Audit">
+      <s-section heading="404 discovery queue">
+        {queue === null ? <s-paragraph>The discovery queue is unavailable.</s-paragraph>
+          : queue.length === 0 ? <s-paragraph>No discovery URLs have been saved.</s-paragraph>
+          : <s-unordered-list>
+              {queue.map((entry) => (
+                <s-list-item key={entry.path}>
+                  {entry.path} | {queueStatusLabels[entry.status]} | {entry.importedAt ? "Includes Search Console import" : "Storefront audit"}
+                  { ` | First seen ${new Date(entry.firstSeenAt).toISOString()}` }
+                  {entry.lastCheckedAt && ` | Checked ${new Date(entry.lastCheckedAt).toISOString()}`}
+                </s-list-item>
+              ))}
+            </s-unordered-list>}
+      </s-section>
+
       <s-section heading="Scheduled audit history">
         {history === null ? (
           <s-paragraph>Scheduled audit history is unavailable.</s-paragraph>
@@ -387,6 +462,19 @@ export default function RedirectAudit() {
               : "Run read-only 404 audit"}
           </button>
         </fetcher.Form>
+
+        <fetcher.Form method="post">
+          <input type="hidden" name="intent" value="run-discovery" />
+          <label>
+            Search Console URLs to save and check
+            <textarea name="discoveryUrls" rows={4} maxLength={discoveryInputLimit}
+              placeholder="Paste the Pages CSV or one storefront URL per line" />
+          </label>
+          <button type="submit" disabled={busy || !ready}>Run expanded read-only audit</button>
+        </fetcher.Form>
+        {fetcher.data?.discovery && <s-paragraph>
+          Imported URLs saved in the queue: {fetcher.data.discovery.imported}. Ignored rows: {fetcher.data.discovery.ignored}.
+        </s-paragraph>}
 
         {fetcher.data?.error ? (
           <s-paragraph>

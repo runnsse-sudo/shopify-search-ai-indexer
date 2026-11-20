@@ -9,6 +9,7 @@ import {
   loadRedirectHistory,
   recordScheduledRedirectAudit,
 } from "../build-tests/redirect-history.mjs";
+import { loadDiscoveryQueue, rememberDiscoveryImport, rememberDiscoveryObservations } from "../build-tests/discovery-queue.mjs";
 import { checkRedirectDestination } from "../build-tests/redirect-audit-server.mjs";
 import { recordCatalogRefresh } from "../app/services/llm-visibility/catalog-history.server.ts";
 import { readStoreActionOverview } from "../app/services/store-action-overview.ts";
@@ -32,6 +33,31 @@ try {
   const shop = "redirect-fixture.myshopify.com";
   const otherShop = "other-redirect-fixture.myshopify.com";
   await db.shop.createMany({ data: [{ domain: shop }, { domain: otherShop }] });
+  const { id: shopId } = await db.shop.findUniqueOrThrow({ where: { domain: shop } });
+  const { id: otherShopId } = await db.shop.findUniqueOrThrow({ where: { domain: otherShop } });
+  const first = new Date("2026-11-20T04:00:00Z");
+  const checked = new Date("2026-11-20T05:00:00Z");
+  await rememberDiscoveryImport(db, shopId, ["/products/old", "/products/old", "/products/pending"], first);
+  await rememberDiscoveryImport(db, otherShopId, ["/products/old"], first);
+  await rememberDiscoveryObservations(db, shopId, [
+    { path: "/products/old", status: "DIRECT_404" },
+    { path: "/products/unverified", status: "UNVERIFIED" },
+    { path: "/products/working", status: "OTHER_RESPONSE" },
+  ], checked);
+  await rememberDiscoveryObservations(db, shopId, [{ path: "/products/old", status: "OTHER_RESPONSE" }], first);
+  await rememberDiscoveryImport(db, shopId, ["/products/old"], checked);
+  let queue = await loadDiscoveryQueue(db, shopId);
+  assert.deepEqual(queue.map(({ path, status }) => [path, status]), [
+    ["/products/pending", "PENDING"], ["/products/unverified", "UNVERIFIED"], ["/products/old", "DIRECT_404"],
+  ]);
+  assert.equal(queue[2].firstSeenAt.toISOString(), first.toISOString());
+  assert.equal(queue[2].importedAt.toISOString(), checked.toISOString());
+  assert.equal((await loadDiscoveryQueue(db, otherShopId))[0].status, "PENDING");
+  await rememberDiscoveryObservations(db, shopId, [{ path: "/products/old", status: "OTHER_RESPONSE" }],
+    new Date("2026-11-20T06:00:00Z"));
+  queue = await loadDiscoveryQueue(db, shopId);
+  assert.equal(queue[2].status, "OTHER_RESPONSE");
+
   const missing = { id: "gid://shopify/UrlRedirect/1", path: "/products/old-one", target: "/products/not-found" };
   const onward = { id: "gid://shopify/UrlRedirect/2", path: "/products/old-two", target: "/products/onward" };
   const diagnostics = {
