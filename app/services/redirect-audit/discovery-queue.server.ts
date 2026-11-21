@@ -1,5 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { isDiscoveryPath, type DiscoveryObservation } from "./discovery-import";
+import { queueFilters, isDiscoveryPath, type DiscoveryObservation } from "./discovery-import";
 
 type QueueRow = {
   path: string;
@@ -69,7 +69,7 @@ export async function rememberDiscoveryObservations(
 }
 
 export const queuePageSize = 25;
-export const queueFilters = ["PENDING", "UNVERIFIED", "DIRECT_404", "OTHER_RESPONSE"] as const;
+
 export type QueueFilter = typeof queueFilters[number];
 
 export function discoveryQueueView(params: URLSearchParams) {
