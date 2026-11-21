@@ -1,5 +1,8 @@
 export type DiscoveryObservation = {
   path: string;
+  reason?: string;
+  httpStatus?: number;
+  retryHttpStatus?: number;
   status: "DIRECT_404" | "UNVERIFIED" | "OTHER_RESPONSE";
 };
 

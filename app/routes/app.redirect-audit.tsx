@@ -17,6 +17,7 @@ import {
   authenticate,
 } from "../shopify.server";
 import {
+  previewDiscoveryRecheck,
   recheckAutomaticRedirect,
   runRedirectAudit,
 } from "../services/redirect-audit/redirect-audit.server";
@@ -59,7 +60,15 @@ const skipExplanations: Record<string, string> = {
 
 function RunDiagnostics({ diagnostics }: { diagnostics: RedirectDiagnostics | null }) {
   if (!diagnostics) return <s-paragraph>Verified 404s and candidate reasons were not recorded.</s-paragraph>;
+  const reasonCounts = new Map<string, number>();
+  for (const item of diagnostics.queueFailures ?? []) {
+    const reason = item.reason ?? "UNKNOWN";
+    reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
+  }
   return <>
+    {reasonCounts.size > 0 && <s-paragraph>
+      Queue findings by reason: {[...reasonCounts].map(([reason, count]) => `${reason}: ${count}`).join(", ")}
+    </s-paragraph>}
     <s-paragraph>Verified direct 404s: {diagnostics.verified404Count} | Links checked: {diagnostics.checkedLinks} | Unverified links: {diagnostics.unverifiedLinks}</s-paragraph>
     {!!diagnostics.unlisted404Count && <s-paragraph>{diagnostics.unlisted404Count} additional 404s were outside the detailed audit result limit.</s-paragraph>}
     {diagnostics.skipped.length > 0 && <details>
@@ -162,7 +171,7 @@ export const action =
         ) ?? "",
       );
 
-    if (intent !== "run-read-only" && intent !== "run-discovery") {
+    if (intent !== "run-read-only" && intent !== "run-discovery" && intent !== "recheck-queue") {
       return {
         ok: false,
         error:
@@ -194,11 +203,17 @@ export const action =
     }
 
     const appUrl = process.env.SHOPIFY_APP_URL ? URL.parse(process.env.SHOPIFY_APP_URL) : null;
-    if (intent === "run-discovery" && (!appUrl || request.headers.get("origin") !== appUrl.origin)) {
+    if (intent !== "run-read-only" && (!appUrl || request.headers.get("origin") !== appUrl.origin)) {
       throw new Response("Request not permitted", { status: 403 });
     }
 
     try {
+      if (intent === "recheck-queue") {
+        const entries = await loadDiscoveryQueue(prisma, shop.id);
+        const paths = entries.filter(({ status }) => status === "UNVERIFIED").map(({ path }) => path);
+        const queuePreview = await previewDiscoveryRecheck(shop.primaryDomain, paths);
+        return { ok: true, error: null, result: null, queuePreview };
+      }
       const discovery = intent === "run-discovery"
         ? parseDiscoveryUrls(String(formData.get("discoveryUrls") ?? ""), new URL(shop.primaryDomain.includes("://") ? shop.primaryDomain : `https://${shop.primaryDomain}`))
         : null;
@@ -255,13 +270,13 @@ export const action =
         {
           shop:
             session.shop,
-          ...(intent !== "run-discovery" && { error }),
+          ...(intent === "run-read-only" && { error }),
         },
       );
 
       return {
         ok: false,
-        error: error instanceof DiscoveryInputError || (intent !== "run-discovery" && error instanceof Error)
+        error: error instanceof DiscoveryInputError || (intent === "run-read-only" && error instanceof Error)
           ? error.message
           : "Redirect audit failed.",
         result: null,
@@ -343,21 +358,50 @@ export default function RedirectAudit() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  const queueFailures = new Map<string, DiscoveryObservation>();
+  for (const run of history?.runs ?? []) {
+    const diagnostics = run.diagnostics as RedirectDiagnostics | null;
+    for (const failure of diagnostics?.queueFailures ?? []) {
+      queueFailures.set(JSON.stringify([diagnostics?.queueObservationAt, failure.path]), failure);
+    }
+  }
+
   return (
     <s-page heading="404 & Redirect Audit">
       <s-section heading="404 discovery queue">
         {queue === null ? <s-paragraph>The discovery queue is unavailable.</s-paragraph>
           : queue.length === 0 ? <s-paragraph>No discovery URLs have been saved.</s-paragraph>
           : <s-unordered-list>
-              {queue.map((entry) => (
-                <s-list-item key={entry.path}>
+              {queue.map((entry) => {
+                const failure = queueFailures.get(JSON.stringify([
+                  entry.lastCheckedAt ? new Date(entry.lastCheckedAt).toISOString() : null, entry.path,
+                ]));
+                return <s-list-item key={entry.path}>
                   {entry.path} | {queueStatusLabels[entry.status]} | {entry.importedAt ? "Includes Search Console import" : "Storefront audit"}
                   { ` | First seen ${new Date(entry.firstSeenAt).toISOString()}` }
+                  {entry.status === "UNVERIFIED" && ` | Reason: ${failure?.reason ?? "UNKNOWN"}`}
+                  {entry.status !== "DIRECT_404" && failure?.httpStatus ? ` | HTTP ${failure.httpStatus}` : null}
+                  {failure?.retryHttpStatus ? ` | Earlier attempt HTTP ${failure.retryHttpStatus}` : null}
                   {entry.lastCheckedAt && ` | Checked ${new Date(entry.lastCheckedAt).toISOString()}`}
                 </s-list-item>
-              ))}
+              })}
             </s-unordered-list>}
       </s-section>
+
+      {queue?.some(({ status }) => status === "UNVERIFIED") && <s-section heading="Recheck unverified links">
+        <fetcher.Form method="post">
+          <input type="hidden" name="intent" value="recheck-queue" />
+          <button type="submit" disabled={busy || !ready}>Preview up to five links</button>
+        </fetcher.Form>
+        {fetcher.data?.queuePreview && <s-unordered-list>
+          {fetcher.data.queuePreview.map((item) => (
+            <s-list-item key={item.path}>
+              {item.path} | {queueStatusLabels[item.status]}
+              {item.reason && ` | ${item.reason}`}{item.httpStatus && ` | HTTP ${item.httpStatus}`}
+            </s-list-item>
+          ))}
+        </s-unordered-list>}
+      </s-section>}
 
       <s-section heading="Scheduled audit history">
         {history === null ? (
