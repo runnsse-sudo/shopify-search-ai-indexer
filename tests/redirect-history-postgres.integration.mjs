@@ -9,7 +9,7 @@ import {
   loadRedirectHistory,
   recordScheduledRedirectAudit,
 } from "../build-tests/redirect-history.mjs";
-import { loadDiscoveryQueue, rememberDiscoveryImport, rememberDiscoveryObservations } from "../build-tests/discovery-queue.mjs";
+import { discoveryQueueView, loadDiscoveryQueuePage, selectedDiscoveryPaths, loadDiscoveryQueue, rememberDiscoveryImport, rememberDiscoveryObservations } from "../build-tests/discovery-queue.mjs";
 import { checkRedirectDestination } from "../build-tests/redirect-audit-server.mjs";
 import { recordCatalogRefresh } from "../app/services/llm-visibility/catalog-history.server.ts";
 import { readStoreActionOverview } from "../app/services/store-action-overview.ts";
@@ -58,6 +58,28 @@ try {
   queue = await loadDiscoveryQueue(db, shopId);
   assert.equal(queue[2].status, "OTHER_RESPONSE");
 
+  await rememberDiscoveryObservations(db, shopId, Array.from({ length: 103 }, (_, i) => ({
+    path: `/products/unverified-${i.toString().padStart(3, "0")}`, status: "UNVERIFIED",
+  })), checked);
+  await db.redirectAuditRun.create({ data: {
+    shopDomain: shop, startedAt: checked, status: "COMPLETE",
+    diagnostics: {
+      queueObservationAt: checked.toISOString(),
+      queueFailures: [{ path: "/products/unverified-102", status: "UNVERIFIED", reason: "HTTP_429", httpStatus: 429 }],
+    },
+  } });
+  const view = discoveryQueueView(new URLSearchParams("queueStatus=UNVERIFIED&queuePage=5"));
+  const discoveryPage = await loadDiscoveryQueuePage(db, shopId, shop, view);
+  assert.equal(discoveryPage.total, 104);
+  assert.equal(discoveryPage.pages, 5);
+  assert.equal(discoveryPage.rows.length, 4);
+  assert.equal(discoveryPage.rows.find(({ path }) => path === "/products/unverified-102").failure.httpStatus, 429);
+  assert.equal((await loadDiscoveryQueuePage(db, otherShopId, otherShop, view)).total, 0);
+  assert.deepEqual(await selectedDiscoveryPaths(db, shopId, ["/products/unverified-102"]), ["/products/unverified-102"]);
+  assert.equal(await selectedDiscoveryPaths(db, otherShopId, ["/products/unverified-102"]), null);
+  assert.equal(await selectedDiscoveryPaths(db, shopId, ["/products/old"]), null);
+  assert.equal(await selectedDiscoveryPaths(db, shopId, Array.from({ length: 6 }, (_, i) => `/products/unverified-${i}`)), null);
+  await db.redirectAuditRun.deleteMany({ where: { shopDomain: shop } });
   const missing = { id: "gid://shopify/UrlRedirect/1", path: "/products/old-one", target: "/products/not-found" };
   const onward = { id: "gid://shopify/UrlRedirect/2", path: "/products/old-two", target: "/products/onward" };
   const diagnostics = {

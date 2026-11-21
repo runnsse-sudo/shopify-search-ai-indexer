@@ -23,6 +23,7 @@ import {
 
 import {
   isBlockedRedirectAuditAddress,
+  previewDiscoveryRecheck,
   recheckAutomaticRedirect,
   runRedirectAudit,
 } from "../build-tests/redirect-audit-server.mjs";
@@ -1388,7 +1389,7 @@ const discoveryResult = await runRedirectAudit({
 });
 assert.equal(discoveryResult.internalLinksChecked, 1);
 assert.equal(discoveryResult.verifiedDirect404Count, 1);
-assert.deepEqual(discoveryObservations, [{ path: "/products/widget-old", status: "DIRECT_404" }]);
+assert.deepEqual(discoveryObservations, [{ path: "/products/widget-old", status: "DIRECT_404", httpStatus: 404 }]);
 assert.ok(discoveryFetches.includes("https://example.com/products/widget-old"));
 
 const rotatedSources = await Promise.all([0, 1, 2].map(async (sourceRotationDay) => {
@@ -1408,3 +1409,43 @@ const rotatedSources = await Promise.all([0, 1, 2].map(async (sourceRotationDay)
 }));
 assert.equal(new Set(rotatedSources).size, 3);
 console.log("REDIRECT_AUDIT_DISCOVERY_IMPORT_AND_ROTATION_PASS");
+const previewPaths = [403, 429, 503, 404, 200, 201].map((status) => `/products/status-${status}`);
+let previewCalls = 0;
+const preview = await previewDiscoveryRecheck("example.com", [
+  "//outside.example/products/unsafe", ...previewPaths,
+], async ({ url, directStatusOnly, allowedHost, deadlineAt }) => {
+  previewCalls++;
+  assert.equal(allowedHost, "example.com");
+  assert.equal(directStatusOnly, true);
+  assert.ok(deadlineAt > Date.now() && deadlineAt - Date.now() <= 20_000);
+  return { requestedUrl: url, finalUrl: url, statusCode: Number(url.slice(-3)), html: "",
+    redirectChain: [], loopDetected: false, contentType: null, error: null };
+});
+assert.equal(previewCalls, 5);
+assert.deepEqual(preview.map(({ status, reason, httpStatus }) => [status, reason, httpStatus]), [
+  ["UNVERIFIED", "HTTP_403", 403], ["UNVERIFIED", "HTTP_429", 429],
+  ["UNVERIFIED", "HTTP_5XX", 503], ["DIRECT_404", undefined, 404], ["OTHER_RESPONSE", undefined, 200],
+]);
+const [timeout] = await previewDiscoveryRecheck("example.com", ["/products/safe"], async () => {
+  throw new DOMException("do not expose arbitrary error details", "TimeoutError");
+});
+assert.deepEqual(timeout, { path: "/products/safe", status: "UNVERIFIED", reason: "TIMEOUT" });
+console.log("REDIRECT_QUEUE_DIAGNOSTICS_AND_BOUNDED_PREVIEW_PASS");
+let mixedAttempts = 0;
+const mixedFindings = [];
+await runRedirectAudit({
+  primaryDomain: "example.com", maxSourcePages: 0, maxLinkChecks: 1,
+  discoveryPaths: ["/products/mixed-failure"],
+  onDiscoveryObservation: (item) => mixedFindings.push(item),
+  fetchDocument: async (input) => {
+    if (!input.url.endsWith("/products/mixed-failure")) return fetchDocumentFixture(input);
+    if (++mixedAttempts > 1) throw new DOMException("internal detail", "TimeoutError");
+    return { requestedUrl: input.url, finalUrl: input.url, statusCode: 429, html: "",
+      redirectChain: [], loopDetected: false, contentType: null, error: null };
+  },
+});
+assert.equal(mixedAttempts, 3);
+assert.deepEqual(mixedFindings, [{
+  path: "/products/mixed-failure", status: "UNVERIFIED", reason: "TIMEOUT", retryHttpStatus: 429,
+}]);
+console.log("REDIRECT_QUEUE_MIXED_RETRY_EVIDENCE_PASS");

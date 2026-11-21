@@ -1,5 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { isDiscoveryPath, type DiscoveryObservation } from "./discovery-import";
+import { queueFilters, isDiscoveryPath, type DiscoveryObservation } from "./discovery-import";
 
 type QueueRow = {
   path: string;
@@ -66,4 +66,67 @@ export async function rememberDiscoveryObservations(
     WHERE "RedirectDiscoveryEntry"."lastCheckedAt" IS NULL
        OR "RedirectDiscoveryEntry"."lastCheckedAt" < EXCLUDED."lastCheckedAt"
   `;
+}
+
+export const queuePageSize = 25;
+
+export type QueueFilter = typeof queueFilters[number];
+
+export function discoveryQueueView(params: URLSearchParams) {
+  const status = queueFilters.find((value) => value === params.get("queueStatus"));
+  const pageParam = params.get("queuePage") ?? "";
+  const page = /^\d{1,6}$/.test(pageParam) ? Math.max(1, Number(pageParam)) : 1;
+  return { status, page };
+}
+
+export async function discoveryQueueCounts(prisma: PrismaClient, shopId: string) {
+  const rows = await prisma.$queryRaw<{ status: QueueFilter; count: bigint }[]>`
+    SELECT "status", COUNT(*) AS count FROM "RedirectDiscoveryEntry"
+    WHERE "shopId" = ${shopId} GROUP BY "status"
+  `;
+  const counts: Record<QueueFilter, number> = { PENDING: 0, UNVERIFIED: 0, DIRECT_404: 0, OTHER_RESPONSE: 0 };
+  for (const { status, count } of rows) counts[status] = Number(count);
+  return counts;
+}
+
+export async function loadDiscoveryQueuePage(prisma: PrismaClient, shopId: string, shopDomain: string,
+  view: ReturnType<typeof discoveryQueueView>) {
+  const counts = await discoveryQueueCounts(prisma, shopId);
+  const total = view.status ? counts[view.status] : Object.values(counts).reduce((sum, count) => sum + count, 0);
+  const pages = Math.max(1, Math.ceil(total / queuePageSize));
+  const page = Math.min(view.page, pages);
+  const filter = view.status ? Prisma.sql`AND q."status" = ${view.status}` : Prisma.empty;
+  const rows = await prisma.$queryRaw<(QueueRow & { failure: DiscoveryObservation | null })[]>`
+    SELECT q."path", q."status", q."firstSeenAt", q."importedAt", q."lastCheckedAt", detail.failure
+    FROM (
+      SELECT * FROM "RedirectDiscoveryEntry" q WHERE q."shopId" = ${shopId} ${filter}
+      ORDER BY CASE q."status" WHEN 'PENDING' THEN 0 WHEN 'UNVERIFIED' THEN 1
+        WHEN 'DIRECT_404' THEN 2 ELSE 3 END, q."lastCheckedAt" ASC NULLS FIRST, q."path"
+      LIMIT ${queuePageSize} OFFSET ${(page - 1) * queuePageSize}
+    ) q LEFT JOIN LATERAL (
+      SELECT item AS failure FROM "RedirectAuditRun" r
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(r.diagnostics->'queueFailures') = 'array'
+          THEN r.diagnostics->'queueFailures' ELSE '[]'::jsonb END
+      ) item
+      WHERE q."status" = 'UNVERIFIED' AND r."shopDomain" = ${shopDomain}
+        AND r."startedAt" BETWEEN q."lastCheckedAt" - interval '1 second' AND q."lastCheckedAt" + interval '1 minute'
+        AND r.diagnostics->>'queueObservationAt' = to_char(q."lastCheckedAt", 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        AND item->>'path' = q."path"
+      ORDER BY r."startedAt" DESC, r.id DESC LIMIT 1
+    ) detail ON true
+    ORDER BY CASE q."status" WHEN 'PENDING' THEN 0 WHEN 'UNVERIFIED' THEN 1
+      WHEN 'DIRECT_404' THEN 2 ELSE 3 END, q."lastCheckedAt" ASC NULLS FIRST, q."path"
+  `;
+  return { rows, counts, total, pages, page, status: view.status };
+}
+
+export async function selectedDiscoveryPaths(prisma: PrismaClient, shopId: string, requested: readonly string[]) {
+  const paths = [...new Set(requested)];
+  if (paths.length < 1 || paths.length > 5 || requested.length !== paths.length || !paths.every(isDiscoveryPath)) return null;
+  const rows = await prisma.$queryRaw<{ path: string }[]>`
+    SELECT "path" FROM "RedirectDiscoveryEntry"
+    WHERE "shopId" = ${shopId} AND "status" = 'UNVERIFIED' AND "path" IN (${Prisma.join(paths)})
+  `;
+  return rows.length === paths.length ? paths : null;
 }

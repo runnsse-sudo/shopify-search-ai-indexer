@@ -590,7 +590,7 @@ async function fetchDocumentWithRetry(
     request:
       RedirectAuditFetchInput;
     deadlineAt: number;
-    onRetry: () => void;
+    onRetry: (httpStatus?: number) => void;
   },
 ): Promise<
   RedirectAuditFetchResult
@@ -648,7 +648,7 @@ async function fetchDocumentWithRetry(
           MAX_FETCH_ATTEMPTS -
             1
       ) {
-        input.onRetry();
+        input.onRetry(result.statusCode);
 
         await waitForRetry(
           RETRY_DELAYS_MS[
@@ -1743,6 +1743,54 @@ function isHtml(
   );
 }
 
+function discoveryOutcome(link: string, fetched?: RedirectAuditFetchResult | null, failure?: unknown): DiscoveryObservation {
+  const { pathname: path } = new URL(link);
+  const code = fetched?.statusCode;
+  const httpStatus = code !== undefined && Number.isInteger(code) && code >= 100 && code <= 599 ? code : undefined;
+  const error = fetched?.error ?? (failure instanceof Error ? failure.message : undefined);
+  const errorName = failure instanceof Error ? failure.name : undefined;
+  const cause = failure instanceof Error && failure.cause instanceof Error
+    ? (failure.cause as Error & { code?: string }).code : undefined;
+  const reason = error === "AUDIT_DEADLINE_EXCEEDED" ? "AUDIT_DEADLINE"
+    : errorName === "TimeoutError" || errorName === "AbortError" || cause?.includes("TIMEOUT") ? "TIMEOUT"
+    : fetched?.loopDetected || error === "REDIRECT_LOOP" ? "REDIRECT_LOOP"
+    : error?.startsWith("REDIRECT_OUTSIDE_HOST") || error === "TOO_MANY_REDIRECTS" ||
+      error === "REDIRECT_WITHOUT_LOCATION" ? "REDIRECT_BLOCKED"
+    : code === 403 ? "HTTP_403"
+    : code === 429 ? "HTTP_429"
+    : code !== undefined && code >= 500 ? "HTTP_5XX"
+    : cause === "ENOTFOUND" || cause === "EAI_AGAIN" || error === "REDIRECT_AUDIT_DNS_LOOKUP_EMPTY" ? "DNS_FAILURE"
+    : error === "BODY_TOO_LARGE" ? "BODY_TOO_LARGE"
+    : cause === "ECONNRESET" || cause === "ECONNREFUSED" || cause === "ENETUNREACH" ? "NETWORK_FAILURE"
+    : !fetched || error || code === undefined || code < 200 ? "UNKNOWN" : undefined;
+  return {
+    path,
+    status: reason ? "UNVERIFIED" : code === 404 && !fetched?.redirectChain.length &&
+      fetched?.finalUrl === link ? "DIRECT_404" : "OTHER_RESPONSE",
+    ...(reason && { reason }),
+    ...(httpStatus !== undefined && { httpStatus }),
+  };
+}
+
+export async function previewDiscoveryRecheck(primaryDomain: string, paths: readonly string[],
+  fetchDocument: RedirectAuditFetcher = defaultFetchDocument) {
+  const base = storefrontBase(primaryDomain);
+  const deadlineAt = Date.now() + 20_000;
+  const results: DiscoveryObservation[] = [];
+  for (const path of [...new Set(paths)].filter(isDiscoveryPath).slice(0, 5)) {
+    if (Date.now() >= deadlineAt) break;
+    const link = normalizeInternalUrl(path, base.href, base.hostname);
+    if (!link || new URL(link).origin !== base.origin) continue;
+    try {
+      const fetched = await fetchDocument({ url: link, allowedHost: base.hostname, directStatusOnly: true, deadlineAt });
+      results.push(discoveryOutcome(link, fetched));
+    } catch (failure) {
+      results.push(discoveryOutcome(link, null, failure));
+    }
+  }
+  return results;
+}
+
 export async function runRedirectAudit(
   input: {
     primaryDomain: string;
@@ -1858,21 +1906,16 @@ export async function runRedirectAudit(
   let retriesPerformed =
     0;
 
-  const fetchDocument:
-    RedirectAuditFetcher =
-      async (
-        request,
-      ) =>
-        fetchDocumentWithRetry({
-          fetchDocument:
-            rawFetchDocument,
-          request,
-          deadlineAt,
-          onRetry: () => {
-            retriesPerformed +=
-              1;
-          },
-        });
+  const fetchDocument = (request: RedirectAuditFetchInput, onRetryHttpStatus?: (status: number) => void) =>
+    fetchDocumentWithRetry({
+      fetchDocument: rawFetchDocument,
+      request,
+      deadlineAt,
+      onRetry: (httpStatus) => {
+        retriesPerformed += 1;
+        if (httpStatus !== undefined) onRetryHttpStatus?.(httpStatus);
+      },
+    });
 
 
   // --------------------------------------------------------
@@ -2315,25 +2358,29 @@ export async function runRedirectAudit(
             [],
           );
 
+        let retryHttpStatus: number | undefined;
         try {
           const fetched =
             await fetchDocument({
               url:
                 link,
               allowedHost,
-            });
+            }, (status) => { retryHttpStatus = status; });
 
           return {
             link,
             sources,
+            retryHttpStatus,
             fetched: { ...fetched, html: "" },
             threw:
               false,
           };
-        } catch {
+        } catch (failure) {
           return {
             link,
             sources,
+            retryHttpStatus,
+            failure,
             fetched:
               null,
             threw:
@@ -2356,17 +2403,13 @@ export async function runRedirectAudit(
     } =
       outcome;
 
-    if (input.onDiscoveryObservation) {
-      const { pathname: path } = new URL(link);
-      if (isDiscoveryPath(path)) {
-        const status = threw || !fetched || fetched.error || fetched.loopDetected ||
-          fetched.statusCode < 200 || fetched.statusCode === 403 || fetched.statusCode === 429 ||
-          fetched.statusCode >= 500
-          ? "UNVERIFIED"
-          : fetched.statusCode === 404 && !fetched.redirectChain.length &&
-            fetched.finalUrl === link ? "DIRECT_404" : "OTHER_RESPONSE";
-        input.onDiscoveryObservation({ path, status });
+    if (input.onDiscoveryObservation && isDiscoveryPath(new URL(link).pathname)) {
+      const observation = discoveryOutcome(link, fetched, "failure" in outcome ? outcome.failure : undefined);
+      if (observation.status === "UNVERIFIED" && outcome.retryHttpStatus !== undefined &&
+          observation.httpStatus !== outcome.retryHttpStatus) {
+        observation.retryHttpStatus = outcome.retryHttpStatus;
       }
+      input.onDiscoveryObservation(observation);
     }
 
     if (

@@ -45,7 +45,11 @@ async function main() {
               }), recheckAutomaticRedirect, async (redirect) => {
                 logCreated(redirect);
                 await saveCreated(redirect);
-              }, undefined, saveDiagnostics);
+              }, undefined, (diagnostics) => saveDiagnostics({
+                ...diagnostics,
+                queueObservationAt: observedAt.toISOString(),
+                queueFailures: observations.filter(({ status }) => status === "UNVERIFIED"),
+              }));
             });
         console.log(JSON.stringify({ shop, ...result }));
         if (result.status !== "COMPLETE") process.exitCode = 1;

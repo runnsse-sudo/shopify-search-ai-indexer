@@ -1,3 +1,4 @@
+import type { DiscoveryObservation } from "./discovery-import";
 import type { AdminGraphqlClient } from "../shopify-product.server";
 import {
   recheckAutomaticRedirect,
@@ -8,6 +9,8 @@ import {
 const navigationScopes = ["read_online_store_navigation", "write_online_store_navigation"];
 const maxCandidates = 5;
 export type RedirectDiagnostics = {
+  queueObservationAt?: string;
+  queueFailures?: DiscoveryObservation[];
   verified404Count: number;
   checkedLinks: number;
   unlisted404Count?: number;

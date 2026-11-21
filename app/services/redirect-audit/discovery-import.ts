@@ -1,5 +1,8 @@
 export type DiscoveryObservation = {
   path: string;
+  reason?: string;
+  httpStatus?: number;
+  retryHttpStatus?: number;
   status: "DIRECT_404" | "UNVERIFIED" | "OTHER_RESPONSE";
 };
 
@@ -43,3 +46,5 @@ export function parseDiscoveryUrls(input: string, origin: URL) {
   if (urls.size > discoveryImportLimit) throw new DiscoveryInputError("Import at most 100 distinct storefront URLs per audit.");
   return { paths: [...urls], ignored };
 }
+
+export const queueFilters = ["PENDING", "UNVERIFIED", "DIRECT_404", "OTHER_RESPONSE"] as const;
