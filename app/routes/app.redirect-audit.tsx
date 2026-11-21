@@ -250,7 +250,7 @@ export const action =
         ? result.brokenInternalLinks.filter(
             (item) => item.suggestion?.eligibleForRecheck && item.redirectChain.length === 0,
           ).slice(0, 5)
-        : null;
+        : [];
       const rechecks = await Promise.all(candidates.map(async (item) => ({
         sourceUrl: item.url,
         verified: Boolean(await recheckAutomaticRedirect(item, result.primaryHost, undefined, deadlineAt)),
