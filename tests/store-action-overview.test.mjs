@@ -119,10 +119,12 @@ test("rendered overview prioritizes action, escapes paths and exposes only navig
   const { StoreActionOverview } = await import("../build-tests/store-action-overview.mjs");
   const { db } = fixture({ issues: [{ shopifyId: "id-1", source: "/<script>secret</script>", target: "/missing", targetStatus: "NOT_FOUND", checkedAt: now }] });
   const overview = await readStoreActionOverview(db, "store.myshopify.com", now);
-  const html = renderToStaticMarkup(React.createElement(StoreActionOverview, { overview }));
+  const html = renderToStaticMarkup(React.createElement(StoreActionOverview, { overview, discoveryCounts: { DIRECT_404: 2, UNVERIFIED: 99 } }));
   assert.ok(html.indexOf('heading="404 &amp; redirect audit"') < html.indexOf('heading="LLM catalog"'));
   assert.match(html, /&lt;script&gt;secret&lt;\/script&gt;/);
   assert.match(html, /Target returned 404/);
+  assert.match(html, /queueStatus=UNVERIFIED.*Unverified addresses \(99\)/s);
+  assert.match(html, /queueStatus=DIRECT_404.*Verified 404 addresses \(2\)/s);
   assert.match(html, /href="\/app\/redirect-audit"/);
   assert.doesNotMatch(html, /<button|<form|<script/);
   // Rendered fixture also allows validation of actual Shopify elements without app credentials.

@@ -83,7 +83,7 @@ export async function readStoreActionOverview(db: OverviewDb, shopDomain: string
     (async () => {
       const [runs, success, issueCount, issues] = await Promise.all([
         db.redirectAuditRun.findMany({ where: { shopDomain }, orderBy: [{ startedAt: "desc" }, { id: "desc" }], take: 2,
-          select: { status: true, startedAt: true, finishedAt: true, stopReason: true, _count: { select: { redirects: true } } } }),
+          select: { status: true, startedAt: true, finishedAt: true, stopReason: true, diagnostics: true, _count: { select: { redirects: true } } } }),
         db.redirectAuditRun.findFirst({ where: { shopDomain, status: "COMPLETE" }, orderBy: [{ startedAt: "desc" }, { id: "desc" }],
           select: { status: true, startedAt: true, finishedAt: true, stopReason: true } }),
         db.redirectAuditCreation.count({ where: { run: { shopDomain }, targetStatus: { in: ["NOT_FOUND", "REDIRECTS"] } } }),
@@ -95,6 +95,14 @@ export async function readStoreActionOverview(db: OverviewDb, shopDomain: string
       const [latest, previous] = runs;
       if (latest) summary.change = `${latest._count.redirects} redirects recorded in the latest run.` +
         (previous ? ` Previous run: ${previous._count.redirects}.` : "");
+      const diagnostics = latest?.diagnostics;
+      if (diagnostics && typeof diagnostics === "object" && !Array.isArray(diagnostics)) {
+        const { checkedLinks, unverifiedLinks } = diagnostics;
+        if (typeof checkedLinks === "number" && typeof unverifiedLinks === "number") {
+          summary.message += ` Latest audit checked ${checkedLinks} links and ${unverifiedLinks} could not be verified.`;
+          if (unverifiedLinks > 0 && summary.state === "current") summary.state = "attention";
+        }
+      }
       if (issueCount > 0) {
         summary.state = "attention";
         summary.message += ` ${issueCount} recorded target checks need attention. Open the audit to review them.`;

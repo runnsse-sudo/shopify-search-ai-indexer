@@ -15,7 +15,7 @@ function StatusCard({ card }: { card: ActionCard }) {
   </s-section>;
 }
 
-export function StoreActionOverview({ overview }: { overview: Overview }) {
+export function StoreActionOverview({ overview, discoveryCounts }: { overview: Overview; discoveryCounts?: { DIRECT_404: number; UNVERIFIED: number } | null }) {
   const cards = [overview.catalog, overview.redirects.summary];
   const attention = cards.filter((card) => card.state === "attention").length;
   const unknown = cards.filter((card) => card.state === "unknown").length;
@@ -26,6 +26,16 @@ export function StoreActionOverview({ overview }: { overview: Overview }) {
       <s-paragraph>Recorded results as of {time(overview.observedAt)}. Scheduled status and target checks reflect the last recorded observation.</s-paragraph>
     </s-section>
     {cards.sort((a, b) => Number(b.state === "attention") - Number(a.state === "attention")).map((card) => <StatusCard key={card.href} card={card} />)}
+    <s-section heading="404 discovery queue">
+      {discoveryCounts === null ? <s-paragraph>Queue counts are unavailable.</s-paragraph> : discoveryCounts && <s-unordered-list>
+        <s-list-item><s-link href="/app/redirect-audit?queueStatus=DIRECT_404">
+          Verified 404 addresses ({discoveryCounts.DIRECT_404})
+        </s-link></s-list-item>
+        <s-list-item><s-link href="/app/redirect-audit?queueStatus=UNVERIFIED">
+          Unverified addresses ({discoveryCounts.UNVERIFIED})
+        </s-link></s-list-item>
+      </s-unordered-list>}
+    </s-section>
     {overview.redirects.issues.length > 0 && <s-section heading="Redirect targets needing attention">
       <s-paragraph>Showing {overview.redirects.issues.length} of {overview.redirects.issueCount} recorded issues.</s-paragraph>
       <s-unordered-list>{overview.redirects.issues.map((issue) => <s-list-item key={issue.shopifyId}>

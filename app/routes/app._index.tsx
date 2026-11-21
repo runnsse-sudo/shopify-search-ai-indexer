@@ -7,6 +7,7 @@ import { authenticate } from "../shopify.server";
 import { IndexingSummary } from "../components/indexing-summary";
 import { StoreActionOverview } from "../components/store-action-overview";
 import { readStoreActionOverview } from "../services/store-action-overview";
+import { discoveryQueueCounts } from "../services/redirect-audit/discovery-queue.server";
 import { readIndexingSummary } from "../services/indexing-dashboard";
 import {
   cancelInitialScan,
@@ -35,8 +36,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const activity = await readStoreActionOverview(prisma, session.shop);
   const shop = await prisma.shop.findUnique({ where: { domain: session.shop }, select: { id: true } });
-  if (!shop) return { activity, counts: { tracked: 0, indexable: 0, pending: 0, failed: 0, events: 0 }, recentEvents: [], scan: null, indexing: null };
-  const [tracked, indexable, indexing, events, recentEvents, scan] = await Promise.all([
+  if (!shop) return { activity, discoveryCounts: null, counts: { tracked: 0, indexable: 0, pending: 0, failed: 0, events: 0 }, recentEvents: [], scan: null, indexing: null };
+  const [tracked, indexable, indexing, events, recentEvents, scan, discoveryCounts] = await Promise.all([
     prisma.productIndexState.count({ where: { shopId: shop.id, deletedAt: null } }),
     prisma.productIndexState.count({ where: { shopId: shop.id, deletedAt: null, indexabilityState: "INDEXABLE" } }),
     readIndexingSummary(prisma, shop.id),
@@ -44,8 +45,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     prisma.indexEvent.findMany({ where: { shopId: shop.id }, orderBy: { receivedAt: "desc" }, take: 8,
       select: { id: true, eventType: true, shopifyProductGid: true, meaningfulContentChanged: true, receivedAt: true } }),
     prisma.scanRun.findFirst({ where: { shopId: shop.id }, orderBy: { createdAt: "desc" }, select: scanSelect }),
+    discoveryQueueCounts(prisma, shop.id).catch(() => null),
   ]);
-  return { activity, counts: { tracked, indexable, pending: indexing.counts.PENDING, failed: indexing.counts.FAILED, events }, recentEvents, scan: scan ? scanSummary(scan) : null, indexing };
+  return { activity, discoveryCounts, counts: { tracked, indexable, pending: indexing.counts.PENDING, failed: indexing.counts.FAILED, events }, recentEvents, scan: scan ? scanSummary(scan) : null, indexing };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -74,7 +76,7 @@ function Metric({ label, value }: { label: string; value: number }) {
 }
 
 export default function Index() {
-  const { activity, counts, recentEvents, scan, indexing } = useLoaderData<typeof loader>();
+  const { activity, discoveryCounts, counts, recentEvents, scan, indexing } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const displayedScan = fetcher.data?.scan ?? scan;
   const busy = fetcher.state !== "idle";
@@ -88,7 +90,7 @@ export default function Index() {
   );
   return (
     <s-page heading="Runn Search AI Indexer">
-      <StoreActionOverview overview={activity} />
+      <StoreActionOverview overview={activity} discoveryCounts={discoveryCounts} />
       <s-section heading="Search & AI Indexing">
         <s-paragraph>Tracks meaningful public product changes and prepares durable indexing work. Provider submission and search engine inclusion are separate outcomes.</s-paragraph>
         <s-stack direction="inline" gap="base">

@@ -23,6 +23,9 @@ export default function ProductDetail() {
   const { product: p, actionsEnabled } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   return <s-page heading={p.title ?? p.gid}>
+    <s-section heading="Indexing activity">
+      <s-link href={`/app/indexing?${new URLSearchParams({ product: p.gid })}`}>Review indexing jobs for this product</s-link>
+    </s-section>
     <s-section heading="Recorded product status">
       <s-paragraph>{p.gid} · {p.state} · {p.productStatus ?? "Unknown"}</s-paragraph>
       <s-paragraph>{p.deleted ? "Deletion recorded" : p.published ? "Publication recorded" : "Publication unverified"}. Last recorded indexing: {indexingDate(p.lastIndexedAt)}.</s-paragraph>

@@ -28,7 +28,6 @@ export default function App() {
         <s-link href="/app/llm-visibility">AI / LLM visibility</s-link>
         <s-link href="/app/seo-audit">SEO Audit</s-link>
         <s-link href="/app/storefront-settings">Storefront settings</s-link>
-        <s-link href="/app/additional">Additional page</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

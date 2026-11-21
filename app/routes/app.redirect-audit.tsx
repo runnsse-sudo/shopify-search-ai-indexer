@@ -24,7 +24,7 @@ import {
 
 import { loadRedirectHistory } from "../services/redirect-audit/redirect-history.server";
 
-import { loadDiscoveryQueue, rememberDiscoveryImport, rememberDiscoveryObservations } from "../services/redirect-audit/discovery-queue.server";
+import { discoveryQueueView, loadDiscoveryQueuePage, queueFilters, selectedDiscoveryPaths, loadDiscoveryQueue, rememberDiscoveryImport, rememberDiscoveryObservations } from "../services/redirect-audit/discovery-queue.server";
 import { DiscoveryInputError, discoveryInputLimit, parseDiscoveryUrls, type DiscoveryObservation } from "../services/redirect-audit/discovery-import";
 import type { RedirectDiagnostics } from "../services/redirect-audit/automatic-redirect.server";
 
@@ -110,8 +110,8 @@ export const loader =
       console.error("Redirect audit history unavailable", { shop: session.shop });
     }
     const queue = shop
-      ? await loadDiscoveryQueue(prisma, shop.id).catch(() => null)
-      : [];
+      ? await loadDiscoveryQueuePage(prisma, shop.id, session.shop, discoveryQueueView(new URL(request.url).searchParams)).catch(() => null)
+      : null;
     return {
       queue,
       history,
@@ -209,8 +209,8 @@ export const action =
 
     try {
       if (intent === "recheck-queue") {
-        const entries = await loadDiscoveryQueue(prisma, shop.id);
-        const paths = entries.filter(({ status }) => status === "UNVERIFIED").map(({ path }) => path);
+        const paths = await selectedDiscoveryPaths(prisma, shop.id, formData.getAll("queuePath"));
+        if (!paths) return { ok: false, error: "Select one to five unverified addresses from this shop.", result: null };
         const queuePreview = await previewDiscoveryRecheck(shop.primaryDomain, paths);
         return { ok: true, error: null, result: null, queuePreview };
       }
@@ -250,7 +250,7 @@ export const action =
         ? result.brokenInternalLinks.filter(
             (item) => item.suggestion?.eligibleForRecheck && item.redirectChain.length === 0,
           ).slice(0, 5)
-        : [];
+        : null;
       const rechecks = await Promise.all(candidates.map(async (item) => ({
         sourceUrl: item.url,
         verified: Boolean(await recheckAutomaticRedirect(item, result.primaryHost, undefined, deadlineAt)),
@@ -358,25 +358,29 @@ export default function RedirectAudit() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  const queueFailures = new Map<string, DiscoveryObservation>();
-  for (const run of history?.runs ?? []) {
-    const diagnostics = run.diagnostics as RedirectDiagnostics | null;
-    for (const failure of diagnostics?.queueFailures ?? []) {
-      queueFailures.set(JSON.stringify([diagnostics?.queueObservationAt, failure.path]), failure);
-    }
-  }
-
+  const queueLink = (page: number, status = queue?.status) => {
+    const params = new URLSearchParams({ queuePage: String(page) });
+    if (status) params.set("queueStatus", status);
+    return `/app/redirect-audit?${params}`;
+  };
   return (
     <s-page heading="404 & Redirect Audit">
       <s-section heading="404 discovery queue">
         {queue === null ? <s-paragraph>The discovery queue is unavailable.</s-paragraph>
-          : queue.length === 0 ? <s-paragraph>No discovery URLs have been saved.</s-paragraph>
-          : <s-unordered-list>
-              {queue.map((entry) => {
-                const failure = queueFailures.get(JSON.stringify([
-                  entry.lastCheckedAt ? new Date(entry.lastCheckedAt).toISOString() : null, entry.path,
-                ]));
+          : <>
+            <s-paragraph>{queue.total} matching addresses. Page {queue.page} of {queue.pages}.</s-paragraph>
+            <s-link href="/app/redirect-audit">All addresses</s-link>
+            <s-unordered-list>{queueFilters.map((status) => <s-list-item key={status}>
+              <s-link href={queueLink(1, status)}>{queueStatusLabels[status]} ({queue.counts[status]})</s-link>
+            </s-list-item>)}</s-unordered-list>
+            <fetcher.Form method="post">
+              <input type="hidden" name="intent" value="recheck-queue" />
+              <s-unordered-list>{queue.rows.map((entry) => {
+                const failure = entry.failure;
                 return <s-list-item key={entry.path}>
+                  {entry.status === "UNVERIFIED" && <label>
+                    <input type="checkbox" name="queuePath" value={entry.path} /> Select for recheck
+                  </label>}
                   {entry.path} | {queueStatusLabels[entry.status]} | {entry.importedAt ? "Includes Search Console import" : "Storefront audit"}
                   { ` | First seen ${new Date(entry.firstSeenAt).toISOString()}` }
                   {entry.status === "UNVERIFIED" && ` | Reason: ${failure?.reason ?? "UNKNOWN"}`}
@@ -385,14 +389,13 @@ export default function RedirectAudit() {
                   {entry.lastCheckedAt && ` | Checked ${new Date(entry.lastCheckedAt).toISOString()}`}
                 </s-list-item>
               })}
-            </s-unordered-list>}
-      </s-section>
-
-      {queue?.some(({ status }) => status === "UNVERIFIED") && <s-section heading="Recheck unverified links">
-        <fetcher.Form method="post">
-          <input type="hidden" name="intent" value="recheck-queue" />
-          <button type="submit" disabled={busy || !ready}>Preview up to five links</button>
-        </fetcher.Form>
+              </s-unordered-list>
+              {queue.rows.some(({ status }) => status === "UNVERIFIED") &&
+                <button type="submit" disabled={busy || !ready}>Preview 1–5 selected addresses</button>}
+            </fetcher.Form>
+            {queue.page > 1 && <s-link href={queueLink(queue.page - 1)}>Previous page</s-link>}
+            {queue.page < queue.pages && <s-link href={queueLink(queue.page + 1)}>Next page</s-link>}
+          </>}
         {fetcher.data?.queuePreview && <s-unordered-list>
           {fetcher.data.queuePreview.map((item) => (
             <s-list-item key={item.path}>
@@ -401,7 +404,7 @@ export default function RedirectAudit() {
             </s-list-item>
           ))}
         </s-unordered-list>}
-      </s-section>}
+      </s-section>
 
       <s-section heading="Scheduled audit history">
         {history === null ? (
